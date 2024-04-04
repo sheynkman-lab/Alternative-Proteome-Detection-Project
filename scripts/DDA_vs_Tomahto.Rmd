@@ -1,0 +1,318 @@
+---
+title: "03-DDA_vs_Tomahto"
+author: "Saikat Bandyopadhyay"
+date: "2022-12-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# clear environment
+rm(list = ls())
+
+# looad packages
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(pals)
+library(Vennerable)
+library(grid)
+library(gridExtra)
+```
+
+
+# Comparision of isoform-informative peptide detection in DDA vs Tomahto
+
+```{r, fig.align='center'}
+# import detection data from google sheet
+dda_vs_tomahto <- read.table(
+  "../../input_data/DDA_vs_tomahto/WTC11_Tomahto_vs_DDA_192_Unfract_vs_Fract .tsv",
+  sep = "\t",
+  header = TRUE
+)
+
+# remove extra rows
+dda_vs_tomahto <- dda_vs_tomahto[1:192,]
+
+# clean_up column names
+colnames(dda_vs_tomahto)[4] <- "deep_proteome"
+
+
+# data extraction function
+extractor <- function(namelist, dataset){
+  tmp <- lapply(
+  namelist, function(x){
+    column_index <- which(grepl(x, colnames(dataset)))
+    print(column_index)
+    extraction <- dataset[,column_index]
+    identifications <- plyr::ldply(1:nrow(extraction), function(i){
+      id_data <- na.omit(unlist(extraction[i,]))
+      id_data <- as.logical(id_data)
+      check  <- any(id_data == TRUE)
+      if(!is.na(check)){
+        if(check == TRUE){
+        dataset[i,1:4]
+        }
+      }
+    }, .id=NULL, .progress = "text")
+  }
+)
+}
+
+# tomahto_replicates 
+tomahto_reps <- c(
+    "Tomahto.REP1",
+    "Tomahto.REP2",
+    "Tomahto.REP3"
+    )
+
+Tomahto_reps_data <- extractor(
+  tomahto_reps,
+  dda_vs_tomahto
+  )
+
+names(Tomahto_reps_data) <- tomahto_reps
+
+Tomahto_reps_data <- lapply(Tomahto_reps_data, function(x){
+  x$Peptide
+})
+
+# DDA replicates
+DDA_reps <- c(
+    "DDA.REP1",
+    "DDA.REP2",
+    "DDA.REP3"
+    )
+
+DDA_reps_data <- extractor(
+  DDA_reps,
+  dda_vs_tomahto
+  )
+
+names(DDA_reps_data) <- DDA_reps
+
+DDA_reps_data <- lapply(DDA_reps_data, function(x){
+  x$Peptide
+})
+
+
+# extract Tomahto and DDA fractionated data
+fraction_data <- lapply(
+  c("Tomahto.REP", "DDA.REP"), function(x){
+    column_index <- which(grepl(x, colnames(dda_vs_tomahto)))
+    fraction_data <- dda_vs_tomahto[,c(1,2,3,4,column_index)]
+    identifications <- plyr::ldply(1:nrow(fraction_data), function(i){
+      id_data <- na.omit(unlist(fraction_data[i, 5:25]))
+      id_data <- as.logical(id_data)
+      check  <- any(id_data == TRUE)
+      if(!is.na(check)){
+        if(check == TRUE){
+        fraction_data[i,1:4]
+        }
+      }
+    }, .id=NULL, .progress = "text")
+  }
+)
+
+names(fraction_data) <- c("Tomahto_fr", "DDA_fr")
+
+# extract Tomahto and DDA unfractionated data
+unfractionated_data <- lapply(
+  c(
+    "Unfractionated.Tomahto..CID.",
+    "Unfractionated.DDA..Skyline."
+  ), function(x){
+    unfrac <- plyr::ldply(1:nrow(dda_vs_tomahto), function(i){
+    detection <- as.logical(dda_vs_tomahto[i,x])
+    if(!is.na(detection)){
+      if(detection == TRUE){
+        dda_vs_tomahto[i,1:4]
+      }
+    }
+    }, .id = NULL, .progress = "text")
+  }
+)
+
+names(unfractionated_data) <- c(
+  "Tomahto", "DDA"
+)
+
+# extract deep proteome DDA data
+deep_peoteome_dda <- plyr::ldply(1:nrow(dda_vs_tomahto), function(i){
+    detection <- as.logical(dda_vs_tomahto[i,"deep_proteome"])
+    if(!is.na(detection)){
+      if(detection == TRUE){
+        dda_vs_tomahto[i,1:4]
+      }
+    }
+    }, .id = NULL, .progress = "text")
+
+# construct a list of all datasets
+identification <- list(
+  fraction_data$Tomahto_fr,
+  fraction_data$DDA_fr,
+  unfractionated_data$Tomahto,
+  unfractionated_data$DDA,
+  deep_peoteome_dda
+)
+
+names(identification) <- c(
+  "Tomahto_fr",
+  "DDA_fr",
+  "Tomahto_unfrac",
+  "DDA_unfrac",
+  "Deep_proteome"
+)
+
+# get statistics for the detection
+detection_statistics <- plyr::ldply(
+  names(identification),function(x){
+    data <- identification[[x]]
+    total_peptides_detected <- nrow(data)
+    total_isoforms_detected <- length(unique(sapply(data[,"GeneSymbol"], function(y){
+      strsplit(y, "\\|")[[1]][1]
+    })))
+    genes_mapped_to_detected_isoforms <- length(unique(sapply(data[,"GeneSymbol"], function(y){
+      strsplit(y, "\\|")[[1]][2]
+    })))
+    
+    detected_major <- length(which(sapply(data[,3], function(x){
+      as.logical(x) == TRUE
+    })))
+    
+    detected_minor <- (total_peptides_detected - detected_major)
+    
+    df <- data.frame(
+      variable = c(
+        "Total peptides",
+        "Total isoforms",
+        "Mapped genes",
+        "Major isoform mapping peptides",
+        "Minor isoform mapping peptides"
+      ),
+      value = c(
+        total_peptides_detected,
+        total_isoforms_detected,
+        genes_mapped_to_detected_isoforms,
+        detected_major,
+        detected_minor
+      )
+    )
+    df$Experiment <- rep(x,nrow(df))
+    return(df)
+  }
+)
+
+plot01 <- detection_statistics %>%
+  ggplot(aes(x=variable, y=value, fill=variable, label=value)) +
+  geom_bar(stat = "identity", width = 1) +
+  facet_grid(.~Experiment) +
+  theme_minimal() +
+  theme(
+    panel.grid.minor =element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.position = "bottom",
+    legend.text = element_text(
+      size=6
+    ), legend.key.size = unit(5, "mm")
+  ) +
+  geom_text(vjust=0.55, size=3) +
+  scale_fill_manual(values = pals::brewer.pastel2(5)) +
+  xlab("") +
+  ylab("Count") +
+  labs(fill="")
+
+# comparison between fractionated DDA vs Tomahto runs
+tomahto_fr_comparison <- list(
+  identification$Tomahto_fr$Peptide,
+  identification$DDA_fr$Peptide
+)
+names(tomahto_fr_comparison) <- c("Tomahto_fractions", "DDA_fractions")
+
+Tomahto_vs_dda_fractions <- Venn(tomahto_fr_comparison)
+plot02 <- grid.grabExpr(plot(Tomahto_vs_dda_fractions, show=list(Faces=FALSE)))
+
+# comparison between unfractionated DDA vs Tomahto runs
+tomahto_unfr_comparison <- list(
+  identification$Tomahto_unfrac$Peptide,
+  identification$DDA_unfrac$Peptide,
+  identification$Deep_proteome$Peptide
+)
+names(tomahto_unfr_comparison) <- c(
+  "Tomahto_unfrac", 
+  "DDA_unfrac",
+  "Deep_proteome"
+)
+Tomahto_vs_dda_un <- Venn(tomahto_unfr_comparison)
+plot03 <- grid.grabExpr(plot(Tomahto_vs_dda_un, show=list(Faces=FALSE)))
+
+Tomahto_reps_venn <- Venn(Tomahto_reps_data)
+plot04 <- grid.grabExpr(plot(Tomahto_reps_venn, show=list(Faces=FALSE)))
+
+DDA_reps_venn <- Venn(DDA_reps_data)
+plot05 <- grid.grabExpr(plot(DDA_reps_venn, show=list(Faces=FALSE)))
+
+venn_diagrams <- arrangeGrob(
+  plot02,
+  plot04, 
+  plot05, 
+  ncol=3, 
+  nrow = 1, 
+  widths = c(5,5,5)
+  )
+
+grid.arrange(
+  arrangeGrob(plot01, ncol = 1),
+  venn_diagrams,
+  heights = c(4,4)
+)
+```
+
+# Intensity levels of the detected peptides
+
+```{r, fig.align='center', fig.height=8}
+# get peak ointensity data
+peak_intensity <- read.table(
+  "../../input_data/DDA_vs_tomahto/WTC11_Unique_Tomahto_Peak_Intensity_0orLow - Target list.tsv", sep="\t", header = T
+)
+# reformat the data frame
+peak_intensity_melt <- reshape2::melt(peak_intensity)
+
+peak_intensity_melt  <- peak_intensity_melt %>%
+  filter(!is.na(value))
+
+# get experimental method DDA or Tomahto
+peak_intensity_melt$method <- sapply(
+  peak_intensity_melt$variable, function(x){
+    if(grepl("Tomahto",x) == T){
+      method <- "Tomahto"
+    } else{
+      method <- "DDA"
+    }
+  }
+)
+
+# get fraction information
+peak_intensity_melt$fraction <- unlist(sapply(1:8, function(i){
+  sapply(peak_intensity_melt$variable, function(x){
+    if(grepl(as.character(i), x) == T){
+      fraction <- i
+    }
+  })
+}))
+
+peak_intensity_data <- peak_intensity_melt[,c(1,8,7,6)]
+
+peak_intensity_data %>%
+  ggplot(aes(
+    y=as.character(Peptide), x=log10(value+1), 
+    shape=method, color=method
+    )) +
+  geom_point(size=2) + 
+  theme_minimal() +
+  xlab(bquote(log[10]("Peak intensity +1"))) +
+  scale_color_manual(values = pals::brewer.dark2(3)[2:3]) +
+  ylab("") +
+  labs(color="Method", shape="Method")
+```
