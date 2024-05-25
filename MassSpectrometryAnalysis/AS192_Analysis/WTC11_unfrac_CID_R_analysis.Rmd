@@ -1,0 +1,1716 @@
+---
+title: "WTC11 Unfractionated Analysis"
+author: "Jennifer Korchak"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Availability
+
+**Raw data files, Proteome Discoverer PSM files, Tomahto Results files must be downloaded from the [PRIDE archive](https://www.ebi.ac.uk/pride/archive) using accessions PXD050904 and PXD050909.**
+
+**Skyline reports for shTMTpro and TMTpro labeled peptides must be generated from the .raw files based on the settings described in the Methods section of the manuscript [IS-PRM-based peptide targeting informed by long-read sequencing for alternative proteome detection](https://doi.org/10.1101/2024.04.01.587549).** 
+
+File paths in the *Read in Files* section will need to be changed accordingly.
+
+# Setting up the Workspace
+
+## Load packages
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(stringr)
+library(ggtree)
+library(eulerr)
+library(gridExtra)
+library(ggpubr)
+
+subset(data.frame(sessioninfo::package_info()), attached==TRUE, c(package, loadedversion))
+```
+
+## Read in Files
+
+```{r, message=FALSE}
+# Set experiment name for automatic file production (date will be automatically included)
+R_experiment_name <- "R_WTC11_Unfrac_CID" 
+
+#Read in AS192 peptide files
+as192 <- read_table("AS192.txt", col_names = FALSE) %>% 
+  pull()
+as192_info <- read_csv("as192_annotations_table_1.csv") %>% 
+  mutate(id = paste("AS192", row_number(), sep = "_"))
+
+#####################################Tomahto Result##################################
+
+tom_result_1 <- read_csv("240229_AC12_230928unfract_WTC11_Tomahto_1_Result.csv")
+tom_result_2 <- read_csv("240229_AC12_230928unfract_WTC11_Tomahto_2_Result.csv")
+tom_result_3 <- read_csv("240229_AC12_230928unfract_WTC11_Tomahto_3_Result.csv")
+
+####################################DDA PSMs###########################################
+
+dda_1 <- read_csv("231116_AC11_230914unfract_WTC11_DDA_1_PSMs.csv")
+dda_2 <- read_csv("231116_AC11_230914unfract_WTC11_DDA_2_PSMs.csv")
+dda_3 <- read_csv("231116_AC11_230914unfract_WTC11_DDA_3_PSMs.csv")
+
+########################################DDA TMT Skyline#########################################
+
+dda_tmt_1 <- read_csv("WTC11unfrac_MS1_MS2_DDA_Rep1_TMTpro_SkylineReport.csv")
+dda_tmt_2 <- read_csv("WTC11unfrac_MS1_MS2_DDA_Rep2_TMTpro_SkylineReport.csv")
+dda_tmt_3 <- read_csv("WTC11unfrac_MS1_MS2_DDA_Rep3_TMTpro_SkylineReport.csv")
+
+########################################DDA shTMT Skyline#######################################
+
+dda_sh_1 <- read_csv("WTC11unfrac_MS1_MS2_DDA_Rep1_shTMTpro_SkylineReport.csv")
+dda_sh_2 <- read_csv("WTC11unfrac_MS1_MS2_DDA_Rep2_shTMTpro_SkylineReport.csv")
+dda_sh_3 <- read_csv("WTC11unfrac_MS1_MS2_DDA_Rep3_shTMTpro_SkylineReport.csv")
+
+########################################Tomahto TMT Skyline###################################
+
+tom_tmt_1 <- read_csv("WTC11_unfrac_CID_Tomahto_Skyline_TMTpro_1.csv")
+#tom_tmt_2 <- read_csv()
+tom_tmt_3 <- read_csv("WTC11_unfrac_CID_Tomahto_Skyline_TMTpro_3.csv")
+
+########################################Tomahto shTMT Skyline#################################
+
+tom_sh_1 <- read_csv("WTC11_unfrac_CID_Tomahto_Skyline_shTMTpro_1.csv")
+tom_sh_2 <- read_csv("WTC11_unfrac_CID_Tomahto_Skyline_shTMTpro_2.csv")
+tom_sh_3 <- read_csv("WTC11_unfrac_CID_Tomahto_Skyline_shTMTpro_3.csv")
+
+###############################add experimental info to each file################################
+dataframes <- ls(pattern = "_[1-3]")
+
+# Add a 'exp' column to each dataframe
+for (df_name in dataframes) {
+  df <- get(df_name) 
+  df$exp <- paste0(df_name)
+  assign(df_name, df, envir = .GlobalEnv)
+}
+
+###################################Combine files################################
+#Results files for DDA and Tomahto
+dda <- bind_rows(dda_1, dda_2, dda_3) %>% 
+  mutate(Peptide = Sequence) #for ease of comparison
+
+tom <- bind_rows(tom_result_1, tom_result_2, tom_result_3)
+
+#Skyline Reports for DDA and Tomahto for shTMT (triggers) and TMTpro (targets)
+dda_sh <- bind_rows(dda_sh_1, dda_sh_2, dda_sh_3)
+
+dda_tmt <- bind_rows(dda_tmt_1, dda_tmt_2, dda_tmt_3)
+
+tom_sh <- bind_rows(tom_sh_1, tom_sh_2, tom_sh_3)
+
+tom_tmt <- bind_rows(tom_tmt_1, tom_tmt_3)
+
+rm(dda_1, dda_2, dda_3, 
+   tom_result_1, tom_result_2, tom_result_3,
+   dda_sh_1, dda_sh_2, dda_sh_3,
+   dda_tmt_1, dda_tmt_2, dda_tmt_3,
+   tom_sh_1, tom_sh_2, tom_sh_3,
+   tom_tmt_1, tom_tmt_3)
+
+```
+
+## Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- list(dda = dda, tom = tom, dda_sh = dda_sh, dda_tmt = dda_tmt, tom_sh = tom_sh, tom_tmt = tom_tmt)
+
+# Create function for summarizing dataframes- Distinct Peptide Number and Number of Rows
+summarize_dataframe <- function(df_name, df) {
+  result <- tibble(
+    DataFrame = df_name,
+    Rows = nrow(df),
+    Distinct_Peptides = n_distinct(df$Peptide), 
+    AS192_Peptides = df %>%
+      filter(Peptide %in% as192) %>%
+      distinct(Peptide) %>%
+      nrow()
+  )
+  return(result)
+}
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_1 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_1 <- bind_rows(summary_table_1)
+
+# Print the summary table
+print(summary_df_1)
+```
+
+# Tomahto Data Analysis
+
+## Look at Tomahto Files
+
+```{r}
+#visualizing the quant channels
+
+columns_to_plot <- paste0("Quant ", 1:18)
+
+# Subsetting the columns
+subset_data <- tom[, columns_to_plot]
+
+# Creating a boxplot to visualize the signal in the quant channels
+boxplot(log10(subset_data +1), col = "lightblue", main = "Boxplot of Quant Columns Taken to log10")
+boxplot(subset_data, col = "lightblue", main = "Boxplot of Quant Columns")
+```
+
+## Adding Column for Target/ Trigger Ratio for Tomahto Files
+
+Metrics for each analysis can be found in the output “_results.csv” files.
+  ratio of target fragment ions observed over trigger fragment ions observed is at least 50%  
+  allow for cases with 40% fragment ion coverage and 100% isospec purity 
+  isospec purity at least 65% 
+
+```{r}
+tom <- tom %>% 
+  mutate(target_trigger_ratio = `Target Peaks`/`Trigger Peaks`)
+```
+
+## Filter targets for metrics
+
+```{r}
+filtered_tom <- tom %>%
+  filter((target_trigger_ratio >= 0.5 & `Iso Spec` >= 0.65) | (target_trigger_ratio >= 0.4 & `Iso Spec` == 1))
+
+filtered_tom <- filtered_tom %>%
+  group_by(Peptide, z) %>%
+  mutate(tomahto_detection_count = n()) %>% 
+  ungroup() %>% 
+  mutate(exp_match = paste0(str_remove(exp, "result_")))
+
+filtered_tom %>% 
+  distinct(Peptide)
+```
+
+### Sanity Check 1! What is the difference between tom and filtered_tom? 
+
+```{r}
+check_1 <- anti_join(tom, filtered_tom, by = "MS2 Scan#")
+check_1 %>% 
+  select(Peptide, z, `Iso Spec`, target_trigger_ratio)
+
+#these peptides did not meet the Tomahto filtering criteria and thus were successfully filtered out
+```
+
+## If MS2 Scan# in the Tomahto results file "filtered_tom" is present in the Skyline report "tom_sh" column "Raw Spectrum Ids", pull those rows 
+
+```{r}
+tom_sh <- tom_sh %>% 
+  mutate(exp_match = paste0(str_remove(exp, "sh_")))
+
+#clean up the scan numbers in the tom_sh files
+tom_sh$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", tom_sh$`Raw Spectrum Ids`)
+tom_sh$`Raw Spectrum Ids` <- gsub(",0,", "", tom_sh$`Raw Spectrum Ids`)
+
+matched_tom_skyline_sh <- inner_join(filtered_tom, tom_sh, join_by("Peptide" == "Peptide", "z" == "Precursor Charge", "exp_match" == "exp_match"), relationship = "many-to-many")
+```
+
+## If MS2 Scan# in the Tomahto results file "filtered_tom" is present in the Skyline report "tom_tmt" column "Raw Spectrum Ids", pull those rows 
+
+```{r}
+tom_tmt <- tom_tmt %>% 
+  mutate(exp_match = paste0(str_remove(exp, "tmt_")))
+
+#clean up the scan numbers in the tom_tmt files
+tom_tmt$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", tom_tmt$`Raw Spectrum Ids`)
+tom_tmt$`Raw Spectrum Ids` <- gsub(",0,", "", tom_tmt$`Raw Spectrum Ids`)
+
+matched_tom_skyline_tmt <- inner_join(filtered_tom, tom_tmt, join_by("Peptide" == "Peptide", "z" == "Precursor Charge", "exp_match" == "exp_match"), relationship = "many-to-many") %>% 
+  filter(str_detect(`Raw Spectrum Ids`, as.character(`MS2 Scan#`)))
+```
+
+### Sanity Check 2! Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- c(list_of_dataframes, list(filtered_tom = filtered_tom, matched_tom_skyline_sh = matched_tom_skyline_sh, matched_tom_skyline_tmt = matched_tom_skyline_tmt))
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_2 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_2 <- bind_rows(summary_table_2)
+
+# Print the summary table
+print(summary_df_2)
+```
+
+## Adding a column to the Skyline files with summed raw intensities
+
+```{r}
+# Define a function to sum numbers in a comma-separated string
+sum_numbers <- function(x) {
+  numbers <- as.numeric(strsplit(x, ",")[[1]])
+  sum(numbers, na.rm = TRUE)
+}
+
+# Mutate a new column in the Skyline TMTpro with the sum of numbers + count scan numbers
+matched_tom_skyline_tmt <- matched_tom_skyline_tmt %>%
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(`Retention Time` = as.numeric(`Retention Time`)) %>%
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1)
+
+# Mutate a new column in the Skyline shTMTpro with the sum of numbers + count scan numbers
+matched_tom_skyline_sh <- matched_tom_skyline_sh %>%
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1)
+
+#check the output
+matched_tom_skyline_tmt %>% 
+  select(Peptide, target_trigger_ratio, `Iso Spec`, `MS2 Scan#`, Sum_Raw_Intensities, scan_count, `Total Area MS1`, `Total Area`) %>% 
+  sample_n(10)
+```
+
+## In matched_tom_skyline_tmt, pull rows that have the highest target_trigger_ratio, Iso Spec, and Sum_Raw_Intensities where Peptide and z are distinct
+
+```{r, warning=FALSE}
+filtered_distinct_tom_tmt <- matched_tom_skyline_tmt %>%
+  group_by(Peptide, z, exp.x) %>%
+  arrange(desc(target_trigger_ratio), desc(`Target Peaks`), desc(`Iso Spec`), desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+
+filtered_distinct_tom_sh <- matched_tom_skyline_sh %>%
+  group_by(Peptide, z, exp.x) %>%
+  arrange(desc(target_trigger_ratio), desc(`Target Peaks`), desc(`Iso Spec`), desc(`Total Area MS1`)) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+
+### Sanity Check 3! Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- c(list_of_dataframes, list(filtered_distinct_tom_sh = filtered_distinct_tom_sh, filtered_distinct_tom_tmt = filtered_distinct_tom_tmt))
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_3 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_3 <- bind_rows(summary_table_3)
+
+# Print the summary table
+print(summary_df_3)
+```
+
+### Sanity Check 4! What is the difference between filtered_tom and filtered_distinct_tom_tmt?
+target_trigger_ratio >= 0.5 & Iso Spec >= 0.65) | (target_trigger_ratio >= 0.4 & Iso Spec == 1)
+
+```{r}
+subset_tom <- filtered_tom %>% 
+ select(Peptide, z, `Iso Spec`, target_trigger_ratio, `MS2 Scan#`, exp)
+
+subset_tom_tmt <- filtered_distinct_tom_tmt %>% 
+ select(Peptide, z, `Iso Spec`, target_trigger_ratio, `MS2 Scan#`, exp.x) %>% 
+  rename(exp = exp.x)
+
+check_2_dif <- setdiff(subset_tom, subset_tom_tmt)
+
+check_2_same <- semi_join(subset_tom, subset_tom_tmt)
+
+check_2_dif
+check_2_same
+
+## The peptide entries that are the same are the 'best' based on the metrics of target_trigger_ratio, followed by `Iso Spec`
+```
+
+## Save the filtered_distinct_tom_tmt as a csv
+
+```{r}
+# Get today's date in the format YYMMDD
+current_date <- format(Sys.Date(), "%y%m%d")
+
+# Create the new file name
+new_file_name_1 <- paste(current_date, R_experiment_name, "SKYLINE_TOM_OUTPUT.csv", sep = "_")
+
+filtered_distinct_tom_tmt_export <- filtered_distinct_tom_tmt %>% 
+  select(!`Raw Spectrum Ids`) %>% 
+  select(!`Raw Intensities`)
+
+# Check if the dataframe has any rows
+if (nrow(filtered_distinct_tom_tmt_export) > 0) {
+  # Write to CSV if there are rows
+  write.csv(filtered_distinct_tom_tmt_export, file = new_file_name_1, row.names = FALSE)
+  cat("CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV.\n")
+}
+```
+
+# WORK ON THIS
+## Visualize the Target Peptides from Tomahto Data with Coupled Skyline Info!
+
+```{r}
+#Filter for only one charge state
+
+tom_tmt_for_fig <- filtered_distinct_tom_tmt %>% 
+  group_by(Peptide, exp.x) %>% 
+  arrange(desc(as.numeric(`Total Area MS1`))) %>% 
+  slice(1) %>%
+  ungroup()
+
+tom_tmt_for_fig %>% 
+  mutate("Total Area Fragment" = as.numeric(`Total Area`) - as.numeric(`Total Area MS1`)) %>%
+  select("Peptide","Total Area MS1", "Total Area", "Total Area Fragment", exp.x)
+
+tom_tmt_for_fig[, c("Total Area MS1", "Total Area", "Sum_Raw_Intensities")] <- 
+  lapply(tom_tmt_for_fig[, c("Total Area MS1", "Total Area", "Sum_Raw_Intensities")], as.numeric)
+
+# Reshape the data from wide to long format
+long_data <- tidyr::gather(tom_tmt_for_fig, key = "Variable", value = "Value", 
+                           c("Total Area MS1", "Total Area", "Sum_Raw_Intensities"))
+
+# Create the bar graph using ggplot to look at the data
+ggplot(long_data, aes(x = Peptide, y = log2(Value+1), fill = exp.x)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Bar Graph for Peptide Intensity",
+       x = "Peptide", y = "Log2 Intensity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Making the appropriate columns numeric
+tom_tmt_for_fig[, c("Total Area MS1", "Total Area")] <- 
+  lapply(tom_tmt_for_fig[, c("Total Area MS1", "Total Area")], as.numeric)
+
+# Create a Log2 Clustered Dot Plot
+ggplot(tom_tmt_for_fig, aes(x = Peptide, y = log2(`Total Area MS1`+1), color = exp.x)) +
+  geom_point(position = position_dodge(width = 0.6)) +
+  labs(title = "Log2 Scaled Clustered Dot Plot for Sum Raw Intensities vs Total Area",
+       x = "Peptide", y = "Log2 Scaled Total Area MS1") +
+  scale_y_continuous(limits = c(0, max(log2(tom_tmt_for_fig$`Total Area MS1` + 1), na.rm = TRUE) + 0.5)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Create a Clustered Dot Plot
+ggplot(tom_tmt_for_fig, aes(x = Peptide, y = `Sum_Raw_Intensities`, color =`Total Area`, size = `Total Area MS1`)) +
+  geom_point(position = position_dodge(width = 0.6)) +
+  labs(title = "Clustered Dot Plot for Sum Raw Intensities vs Total Area",
+       x = "Peptide", y = "Total Area MS1") +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+# DDA Data Analysis
+
+## Look at DDA Files
+
+```{r}
+#as reminders...
+print(colnames(dda))
+print(summary_df_1)
+
+#visualize the data - Triggers
+dda %>%
+  filter(Sequence %in% as192) %>%
+  filter(str_detect(Modifications, "shTMTpro")) %>% 
+  group_by(Peptide) %>%
+  top_n(1, wt = Intensity) %>%
+  arrange(Intensity) %>%
+  ggplot(aes(x = Intensity, y = reorder(Sequence, Intensity))) +
+  geom_col(fill = "skyblue", width = 0.7) +
+  labs(title = "Bar Plot of AS192 Trigger Peptide Intensity from DDA",
+       x = "Intensity (from PD)", y = "Sequence") +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 6))
+
+#log scaled - Triggers
+dda %>%
+  filter(Sequence %in% as192) %>%
+  filter(str_detect(Modifications, "shTMTpro")) %>% 
+  group_by(Peptide) %>%
+  top_n(1, wt = Intensity) %>%
+  mutate(log_Intensity = log2(Intensity +1)) %>% 
+  arrange(log_Intensity) %>%
+  ggplot(aes(x = log2(Intensity +1), y = reorder(Sequence, log_Intensity))) +
+  geom_col(fill = "skyblue", width = 0.7) +
+  labs(title = "Bar Plot of Log Scaled AS192 Trigger Peptide Intensity",
+       x = "log2 Intensity (from PD)", y = "Sequence") +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 6))
+
+#visualize the data - Targets
+dda %>%
+  filter(Sequence %in% as192) %>%
+  filter(!str_detect(Modifications, "shTMTpro")) %>% 
+  group_by(Peptide) %>%
+  top_n(1, wt = Intensity) %>%
+  arrange(Intensity) %>%
+  ggplot(aes(x = Intensity, y = reorder(Sequence, Intensity))) +
+  geom_col(fill = "skyblue", width = 0.7) +
+  labs(title = "Bar Plot of AS192 Target Peptide Intensity from DDA",
+       x = "Intensity (from PD)", y = "Sequence") +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 6))
+
+#log scaled - Targets
+dda %>%
+  filter(Sequence %in% as192) %>%
+  filter(!str_detect(Modifications, "shTMTpro")) %>% 
+  group_by(Peptide) %>%
+  top_n(1, wt = Intensity) %>%
+  mutate(log_Intensity = log2(Intensity +1)) %>% 
+  arrange(log_Intensity) %>%
+  ggplot(aes(x = log2(Intensity +1), y = reorder(Sequence, log_Intensity))) +
+  geom_col(fill = "skyblue", width = 0.7) +
+  labs(title = "Bar Plot of Log Scaled AS192 Target Peptide Intensity",
+       x = "log2 Intensity (from PD)", y = "Sequence") +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 6))
+
+```
+
+
+## Filter the DDA data by AS192 Peptides and Other Metrics
+
+*Metrics*
+Percolator_PEP Score of </= 0.01
+Split into shTMTpro labeled and TMTpro labeled AS192 peptides
+
+### DDA shTMTpro-labeled Triggers 
+
+```{r}
+dda_filtered_sh <- dda %>% 
+  filter(Sequence %in% as192) %>%
+  filter(str_detect(Modifications, "shTMTpro")) %>% 
+  filter(`Percolator_PEP` <= 0.01)
+
+dda_filtered_sh <- dda_filtered_sh %>%
+  group_by(Sequence, Charge) %>%
+  mutate(DDA_detection_count = n()) %>% 
+  ungroup() %>% 
+  mutate(exp_match = paste0(exp))
+
+dda_filtered_sh_distinct <- dda_filtered_sh %>% 
+  group_by(Sequence, Charge, exp) %>%
+  top_n(1, wt = Intensity) %>% 
+  ungroup()
+```
+
+### Sanity Check 5! What is the difference between dda, dda_filtered_sh, and dda_filtered_sh_distinct?
+
+Ensuring that the PSMs filtered out do not meet the conditions of PEP Score </= 0.01
+
+```{r}
+check_3 <- anti_join(dda, dda_filtered_sh, by = "First_Scan")
+check_3 %>% 
+  select(Sequence, Charge, `Isolation_Interference_in_Percent`, `Percolator_PEP`)
+
+check_4 <- anti_join(dda_filtered_sh, dda_filtered_sh_distinct, by = "First_Scan")
+check_4 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count)
+
+dda_filtered_sh %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count)
+
+dda_filtered_sh_distinct %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count)
+```
+
+### DDA TMTpro-labeled Targets
+
+```{r}
+dda_filtered_tmt <- dda %>% 
+  filter(Sequence %in% as192) %>%
+  filter(!str_detect(Modifications, "shTMTpro")) %>% 
+  filter(str_detect(Modifications, "TMTpro")) %>% 
+  filter(`Percolator_PEP` <= 0.01)
+
+dda %>% 
+  filter(Sequence %in% as192) %>%
+  filter(!str_detect(Modifications, "shTMTpro")) %>% 
+  filter(str_detect(Modifications, "TMTpro")) %>% 
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", exp)
+
+dda_filtered_tmt <- dda_filtered_tmt %>%
+  group_by(Sequence, Charge) %>%
+  mutate(DDA_detection_count = n()) %>% 
+  ungroup() %>% 
+  mutate(exp_match = paste0(exp))
+
+dda_filtered_tmt_distinct <- dda_filtered_tmt %>% 
+  group_by(Sequence, Charge, exp) %>%
+  top_n(1, wt = Intensity) %>% 
+  ungroup()
+```
+
+### Sanity Check 6! What is the difference between dda, dda_filtered_tmt, and dda_filtered_tmt_distinct?
+
+Ensuring that the PSMs filtered out do not meet the conditions of PEP Score <0.01
+
+```{r}
+check_5 <- anti_join(dda, dda_filtered_tmt, by = "First_Scan")
+check_5 %>% 
+  select(Sequence, Charge, "Isolation_Interference_in_Percent", "Percolator_PEP", exp)
+
+check_6 <- anti_join(dda_filtered_tmt, dda_filtered_tmt_distinct, by = "First_Scan")
+check_6 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count, exp)
+
+dda_filtered_tmt %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count, exp)
+
+dda_filtered_tmt_distinct %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count, exp)
+```
+
+## Save dda_filtered_sh_distinct and dda_filtered_tmt_distinct as .csv's
+
+```{r}
+# Get today's date in the format YYMMDD
+current_date <- format(Sys.Date(), "%y%m%d")
+
+# Create the new file name
+new_file_name_3 <- paste(current_date, R_experiment_name, "DDA_SH_FILT_OUTPUT.csv", sep = "_")
+
+# Check if the dataframe has any rows
+if (nrow(dda_filtered_sh_distinct) > 0) {
+  # Write to CSV if there are rows
+  write.csv(dda_filtered_sh_distinct, file = new_file_name_3, row.names = FALSE)
+  cat("dda_filtered_sh_distinct CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for dda_filtered_sh_distinct.\n")
+}
+
+# Create the new file name
+new_file_name_4 <- paste(current_date, R_experiment_name, "DDA_TMT_FILT_OUTPUT.csv", sep = "_")
+
+# Check if the dataframe has any rows
+if (nrow(dda_filtered_tmt_distinct) > 0) {
+  # Write to CSV if there are rows
+  write.csv(dda_filtered_sh_distinct, file = new_file_name_4, row.names = FALSE)
+  cat("dda_filtered_tmt_distinct CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for dda_filtered_tmt_distinct.\n")
+}
+```
+
+## If Master_Scans in the PD PSM file "dda_filtered_sh" is present in the Skyline report "dda_sh" column "Raw Spectrum Ids", pull those rows 
+
+Master_Scans in PD = the precursor scan number(s) 
+
+```{r}
+dda_sh <- dda_sh %>% 
+  mutate(exp_match = paste0(str_remove(exp, "sh_")))
+
+#clean up the scan numbers in the dda_sh files
+dda_sh$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", dda_sh$`Raw Spectrum Ids`)
+dda_sh$`Raw Spectrum Ids` <- gsub(",0,", "", dda_sh$`Raw Spectrum Ids`)
+
+matched_dda_skyline_sh <- inner_join(dda_filtered_sh, dda_sh, join_by("Sequence" == "Peptide", "Charge" == "Precursor Charge", "exp_match" == "exp_match"), relationship = "many-to-many") %>% 
+  filter(str_detect(`Raw Spectrum Ids`, as.character(`Master_Scans`))) %>% 
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1) %>% 
+  ungroup()
+
+matched_dda_skyline_sh_distinct <- matched_dda_skyline_sh %>% 
+  group_by(Charge, Sequence, exp.x) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+```
+
+### Sanity Check 7! What is the difference between matched_dda_skyline_sh_distinct and dda_filtered_sh_distinct?
+
+```{r}
+anti_join(dda_filtered_sh_distinct, matched_dda_skyline_sh_distinct, join_by(Peptide, Charge))
+#output with 0 rows = same peptides
+
+check_7 <- anti_join(dda_filtered_sh_distinct, matched_dda_skyline_sh_distinct, by = "Master_Scans")
+check_7 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count, "First_Scan", "Master_Scans", exp)
+
+check_8 <- anti_join(matched_dda_skyline_sh_distinct, dda_filtered_sh_distinct, by = "Master_Scans")
+check_8 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count, "First_Scan", "Master_Scans", exp.x)
+```
+
+## If Master_Scans in the PD PSM file "dda_filtered_tmt" is present in the Skyline report "dda_tmt" column "Raw Spectrum Ids", pull those rows 
+
+```{r}
+dda_tmt <- dda_tmt %>% 
+  mutate(exp_match = paste0(str_remove(exp, "tmt_")))
+
+#clean up the scan numbers in the dda_sh files
+dda_tmt$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", dda_tmt$`Raw Spectrum Ids`)
+dda_tmt$`Raw Spectrum Ids` <- gsub(",0,", "", dda_tmt$`Raw Spectrum Ids`)
+
+matched_dda_skyline_tmt <- inner_join(dda_filtered_tmt, dda_tmt, join_by("Sequence" == "Peptide", "Charge" == "Precursor Charge", "exp_match" == "exp_match"), relationship = "many-to-many") %>% 
+  filter(str_detect(`Raw Spectrum Ids`, as.character(`Master_Scans`))) %>% 
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1) %>% 
+  ungroup()
+
+matched_dda_skyline_tmt_distinct <- matched_dda_skyline_tmt %>% 
+  group_by(Charge, Sequence, exp.x) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+```
+
+### Sanity Check 8! Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- c(list_of_dataframes, list(dda_filtered_sh= dda_filtered_sh, matched_dda_skyline_sh = matched_dda_skyline_sh, matched_dda_skyline_tmt = matched_dda_skyline_tmt))
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_4 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_4 <- bind_rows(summary_table_4)
+
+# Print the summary table
+print(summary_df_4)
+```
+
+## Save matched_dda_skyline_sh and matched_dda_skyline_tmt as .csv's
+
+```{r}
+# Get today's date in the format YYMMDD
+current_date <- format(Sys.Date(), "%y%m%d")
+
+# Create the new file name
+new_file_name_5 <- paste(current_date, R_experiment_name, "SKYLINE_DDA_SH_OUTPUT.csv", sep = "_")
+
+matched_dda_skyline_sh_export <- matched_dda_skyline_sh %>% 
+  select(!`Raw Spectrum Ids`) %>% 
+  select(!`Raw Intensities`)
+
+# Check if the dataframe has any rows
+if (nrow(matched_dda_skyline_sh_export) > 0) {
+  # Write to CSV if there are rows
+  write.csv(matched_dda_skyline_sh_export, file = new_file_name_5, row.names = FALSE)
+  cat("matched_dda_skyline_sh CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for matched_dda_skyline_sh.\n")
+}
+
+# Create the new file name
+new_file_name_6 <- paste(current_date, R_experiment_name, "SKYLINE_DDA_TMT_OUTPUT.csv", sep = "_")
+
+matched_dda_skyline_tmt_export <- matched_dda_skyline_tmt %>% 
+  select(!`Raw Spectrum Ids`) %>% 
+  select(!`Raw Intensities`)
+
+# Check if the dataframe has any rows
+if (nrow(matched_dda_skyline_tmt_export) > 0) {
+  # Write to CSV if there are rows
+  write.csv(matched_dda_skyline_tmt_export, file = new_file_name_6, row.names = FALSE)
+  cat("matched_dda_skyline_tmt CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for matched_dda_skyline_tmt.\n")
+}
+```
+
+## Visualize DDA + Tomahto Data
+
+### Generate dataframe for figures
+
+```{r}
+## make matched_dda_skyline_tmt_distinct and filtered_distinct_tom_tmt compatible to be joined
+
+dda_for_fig <- matched_dda_skyline_tmt_distinct %>% 
+  group_by(Peptide, exp.x) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  select(Peptide, DDA_detection_count, `Charge`, `Total Area MS1`, `Total Area`, exp.x) %>% 
+  rename(num_detected = DDA_detection_count, charge = Charge) %>% 
+  mutate(source = "DDA",
+      replicate = as.numeric(sub(".*_([1-3])", "\\1", exp.x)))
+
+tom_for_fig <- filtered_distinct_tom_tmt %>% 
+  group_by(Peptide, exp.x) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  select(Peptide, tomahto_detection_count, `z`, `Total Area MS1`,`Total Area`, exp.x) %>% 
+  rename(num_detected = tomahto_detection_count, charge = z) %>% 
+  mutate(source = "Tomahto",
+      replicate = as.numeric(sub(".*_([1-3])", "\\1", exp.x)))
+
+combined_for_fig <- bind_rows(dda_for_fig, tom_for_fig) %>% 
+  rename(total_area_MS1 = "Total Area MS1", total_area_MS2 = "Total Area")
+
+combined_for_fig <- left_join(combined_for_fig, as192_info, join_by(Peptide == peptide))
+
+combined_for_fig <- combined_for_fig %>% 
+  select(Peptide, charge, num_detected, total_area_MS1, total_area_MS2, source, replicate, id, genes, isoforms, is_major_gene_isoform) %>% 
+  mutate(is_major_gene_isoform_char = ifelse(is_major_gene_isoform, "major", "minor")) %>% 
+  group_by(Peptide, source) %>%
+  mutate(total_times_detected = n()) %>%
+  ungroup()
+
+combined_for_fig$total_area_MS1 <- as.numeric(combined_for_fig$total_area_MS1)
+combined_for_fig$total_area_MS2 <- as.numeric(combined_for_fig$total_area_MS2)
+
+#########################Tomahto Replicate 2 does not have a Skyline file######
+tom_for_fig_no_sky <- filtered_tom %>% 
+  group_by(Peptide, exp) %>%
+  arrange(desc(`Quant 9`)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  select(Peptide, tomahto_detection_count, z, exp) %>% 
+  rename(num_detected = tomahto_detection_count) %>% 
+  mutate(source = "Tomahto",
+      replicate = as.numeric(sub(".*_([1-3])", "\\1", exp)))
+
+#######################Combined Including Tomahto Replicate 2###################
+combined_for_fig_no_sky <- bind_rows(dda_for_fig, tom_for_fig_no_sky) 
+
+combined_for_fig_no_sky <- left_join(combined_for_fig_no_sky, as192_info, join_by(Peptide == peptide))
+
+combined_for_fig_no_sky <- combined_for_fig_no_sky %>% 
+  select(Peptide, charge, num_detected, source, replicate, id, genes, isoforms, is_major_gene_isoform) %>% 
+  mutate(is_major_gene_isoform_char = ifelse(is_major_gene_isoform, "major", "minor")) %>% 
+  group_by(Peptide, source) %>%
+  mutate(total_times_detected = n()) %>%
+  ungroup()
+##########################Colors############################################
+
+custom_palette <- c(
+  "DDA" = "#13b6f1",
+  "Tomahto" = "#ef3478")
+
+########Write Dataframe#########################
+# Get today's date in the format YYMMDD
+current_date <- format(Sys.Date(), "%y%m%d")
+
+# Create the new file name
+new_file_name_7 <- paste(current_date, R_experiment_name, "COMBINED_FOR_FIGURE.csv", sep = "_")
+
+write_csv(combined_for_fig, new_file_name_7)
+```
+
+### Generating Figures- Repeatability (Including Rep 2)
+
+```{r}
+##########AS192 DETECTION IN DDA vs TOMAHTO- REPEATABILITY##############################
+
+##################full peptide information############################################
+plot_w2_as192_facet_source_rep_peps <- combined_for_fig_no_sky %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = replicate, y = reorder(Peptide, desc(total_times_detected)), color = source)) +
+  facet_wrap(~ source) +
+  geom_point(size= 5) +
+  scale_x_continuous(breaks = c(1, 2, 3), labels = c("1", "2", "3")) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability of Tomahto: AS192 Peptides", width = 60),
+    x = "Replicate", y = "Peptide", color = "Source"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_w2_as192_facet_source_rep_peps
+
+#####peptide information + faceted by replicate as well#####################
+plot_w2_as192_facet_source_and_rep_peps <- combined_for_fig_no_sky %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = source, y = reorder(Peptide, desc(total_times_detected)), color = source)) +
+  facet_grid(rows = vars(source),
+             cols = vars(replicate),
+             space = "free_y", scales = "fixed") +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: AS192 Peptides", width = 60),
+    x = "Replicate", y = "Peptide", color = "Source"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_w2_as192_facet_source_and_rep_peps
+
+#####peptide information + faceted by replicate, + color = source#####################
+plot_w2_as192_rep_peps <- combined_for_fig_no_sky %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = source, y = reorder(Peptide, desc(total_times_detected)), color = source)) +
+  facet_grid(cols = vars(replicate),
+             space = "free_y", scales = "fixed") +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: AS192 Peptides", width = 60),
+    x = "Replicate", y = "Peptide", color = "Source"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_w2_as192_rep_peps
+
+##################IDs#######################################################
+plot_w2_as192_facet_source_rep_ids <- combined_for_fig_no_sky %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = replicate, y = reorder(id, desc(total_times_detected)), color = source)) +
+  facet_wrap(~ source) +
+  geom_point(size= 5) +
+  scale_x_continuous(breaks = c(1, 2, 3), labels = c("1", "2", "3")) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability of Tomahto: AS192 Peptides", width = 60),
+    x = "Replicate", y = "Peptide ID", color = "Source"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_w2_as192_facet_source_rep_ids
+
+#####IDs+ faceted by replicate, + color = source#####################
+plot_w2_as192_rep_ids <- combined_for_fig_no_sky %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = source, y = reorder(id, desc(total_times_detected)), color = source)) +
+  facet_grid(cols = vars(replicate),
+             space = "free_y", scales = "fixed") +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: AS192 Peptides", width = 60),
+    x = "Source", y = "Peptide ID") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")) +
+  guides(color = "none")
+
+plot_w2_as192_rep_ids
+```
+
+
+### Generating Figures- Repeatability
+
+```{r}
+##########AS192 DETECTION IN DDA vs TOMAHTO- REPEATABILITY##############################
+
+##################full peptide information############################################
+plot_as192_facet_source_rep_peps <- combined_for_fig %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = replicate, y = reorder(Peptide, desc(total_times_detected)), color = source)) +
+  facet_wrap(~ source) +
+  geom_point(size= 5) +
+  scale_x_continuous(breaks = c(1, 2, 3), labels = c("1", "2", "3")) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability of Tomahto: AS192 Peptides", width = 60),
+    x = "Replicate", y = "Peptide", color = "Source"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_as192_facet_source_rep_peps
+
+#####peptide information + faceted by replicate as well#####################
+plot_as192_facet_source_and_rep_peps <- combined_for_fig %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = source, y = reorder(Peptide, desc(total_times_detected)), color = source)) +
+  facet_grid(rows = vars(source),
+             cols = vars(replicate),
+             space = "free_y", scales = "fixed") +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: AS192 Peptides", width = 60),
+    x = "Replicate", y = "Peptide", color = "Source"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_as192_facet_source_and_rep_peps
+
+#####peptide information + faceted by replicate, + color = source#####################
+plot_as192_rep_peps <- combined_for_fig %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = source, y = reorder(Peptide, desc(total_times_detected)), color = source)) +
+  facet_grid(cols = vars(replicate),
+             space = "free_y", scales = "fixed") +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: AS192 Peptides", width = 60),
+    x = "Replicate", y = "Peptide", color = "Source"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_as192_rep_peps
+
+##################IDs#######################################################
+plot_as192_facet_source_rep_ids <- combined_for_fig %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = replicate, y = reorder(id, desc(total_times_detected)), color = source)) +
+  facet_wrap(~ source) +
+  geom_point(size= 5) +
+  scale_x_continuous(breaks = c(1, 2, 3), labels = c("1", "2", "3")) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability of Tomahto: AS192 Peptides", width = 60),
+    x = "Replicate", y = "Peptide ID", color = "Source"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_as192_facet_source_rep_ids
+
+#####IDs+ faceted by replicate, + color = source#####################
+plot_as192_rep_ids <- combined_for_fig %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = source, y = reorder(id, desc(total_times_detected)), color = source)) +
+  facet_grid(cols = vars(replicate),
+             space = "free_y", scales = "fixed") +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: AS192 Peptides", width = 60),
+    x = "Source", y = "Peptide ID") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")) +
+  guides(color = "none")
+
+plot_as192_rep_ids
+
+#peptide IDs+ faceted by replicate + MS1 intensity #################
+plot_as192_rep_peps_grid_MS1 <- combined_for_fig %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = source, y = reorder(Peptide, desc(total_times_detected)), color = source, size = total_area_MS1)) +
+    facet_grid(cols = vars(replicate),
+             space = "free_y", scales = "fixed") +
+  geom_point() +
+  scale_color_manual(values = custom_palette) +
+  scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  labs(
+    title = str_wrap("Repeatability: MS1 Intensity of AS192 Peptides", width = 60),
+    x = "Source", y = "Peptide", color = "Source", size = "Total MS1 Intensity"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")) +
+  guides(color = "none")
+
+plot_as192_rep_peps_grid_MS1
+
+
+#peptide IDs+ faceted by replicate + LOG MS1 intensity #################
+plot_as192_rep_peps_grid_logMS1 <- combined_for_fig %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = source, y = reorder(Peptide, desc(total_times_detected)), color = source, size = log2(total_area_MS1 +1))) +
+    facet_grid(cols = vars(replicate),
+             space = "free_y", scales = "fixed") +
+  geom_point() +
+  scale_color_manual(values = custom_palette) +
+  scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS1 +1)))) +
+  labs(
+    title = str_wrap("Repeatability: Log Scaled MS1 Intensity of AS192 Peptides", width = 60),
+    x = "Source", y = "Peptide", color = "Source", size= str_wrap("Log Scaled Total Area MS1", width = 15)
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")) +
+  guides(color = "none")
+
+plot_as192_rep_peps_grid_logMS1
+
+#peptide IDs+ faceted by replicate + MS1 intensity #################
+plot_as192_rep_ids_grid_MS1 <- combined_for_fig %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = source, y = reorder(id, desc(total_times_detected)), color = source, size = total_area_MS1)) +
+    facet_grid(cols = vars(replicate),
+             space = "free_y", scales = "fixed") +
+  geom_point() +
+  scale_color_manual(values = custom_palette) +
+  scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  labs(
+    title = str_wrap("Repeatability: MS1 Intensity of AS192 Peptides", width = 60),
+    x = "Source", y = "Peptide ID", color = "Source", size = "Total MS1 Intensity"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")) +
+  guides(color = "none")
+
+plot_as192_rep_ids_grid_MS1
+
+
+#peptide IDs+ faceted by replicate + LOG MS1 intensity #################
+plot_as192_rep_ids_grid_logMS1 <- combined_for_fig %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = source, y = reorder(id, desc(total_times_detected)), color = source, size = log2(total_area_MS1 +1))) +
+    facet_grid(cols = vars(replicate),
+             space = "free_y", scales = "fixed") +
+  geom_point() +
+  scale_color_manual(values = custom_palette) +
+  scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS1 +1)))) +
+  labs(
+    title = str_wrap("Repeatability: Log Scaled MS1 Intensity of AS192 Peptides", width = 60),
+    x = "Source", y = "Peptide ID", color = "Source", size= str_wrap("Log Scaled Total Area MS1", width = 15)
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")) +
+  guides(color = "none")
+
+plot_as192_rep_ids_grid_logMS1
+
+#peptide IDs+ faceted by target dilution amol + MS2 intensity #################
+plot_as192_rep_ids_grid_MS2 <- combined_for_fig %>%
+  group_by(Peptide, source, replicate) %>%
+  ggplot(aes(x = source, y = reorder(id, desc(total_times_detected)), color = source, size = total_area_MS2)) +
+    facet_grid(cols = vars(replicate),
+             space = "free_y", scales = "fixed") +
+  geom_point() +
+  scale_color_manual(values = custom_palette) +
+  scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS2))) +
+  labs(
+    title = str_wrap("Repeatability: MS2 Intensity of AS192 Peptides", width = 60),
+    x = "Source", y = "Peptide ID", color = "Source", size = "Total MS1 Intensity"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")) +
+  guides(color = "none")
+
+plot_as192_rep_ids_grid_MS2
+```
+
+### Generating Figures - Peptide Detection
+
+```{r}
+#########AS192 DETECTION IN DDA vs TOMAHTO- DETECTION / MS1 INTENSITY##################
+
+#####################full peptide information + MS1 Intensity######################
+plot_as192_detection_ms1_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= source, size = total_area_MS1)) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of AS192 Peptides: MS1 Intensity", width = 60),
+       x= "Source", y = "Peptide", color = "Source", size= "Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_as192_detection_ms1_int
+
+#####################full peptide information + MS2 Intensity######################
+plot_as192_detection_ms2_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= source, size = total_area_MS2)) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS2))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of AS192 Peptides: MS2 Intensity", width = 60),
+       x= "Source", y = "Peptide", color = "Source", size= "Total Area MS2") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_as192_detection_ms2_int
+
+
+#####################full peptide information + LOG MS1 Intensity######################
+plot_as192_detection_log_ms1_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1+1)), color= source, size = log2(total_area_MS1+1))) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS1 +1)))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of AS192 Peptides: Log Scaled MS1 Intensity", width = 60),
+       x= "Source", y = "Peptide", color = "Source", size= str_wrap("Log Scaled Total Area MS1", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_as192_detection_log_ms1_int
+
+#####################full peptide information + LOG MS1 Intensity######################
+plot_as192_detection_log_ms2_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1+1)), color= source, size = log2(total_area_MS2+1))) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS2 +1)))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of AS192 Peptides: Log Scaled MS2 Intensity", width = 60),
+       x= "Source", y = "Peptide", color = "Source", size= str_wrap("Log Scaled Total Area MS2", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_as192_detection_log_ms2_int
+
+#####################full peptide information + NO MS1 Intensity######################
+plot_as192_detection <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= source)) +
+  geom_point(size = 5) +
+  scale_color_manual(values = custom_palette) +
+    labs(title = str_wrap("Detection of AS192 Peptides", width = 60),
+       x= "Source", y = "Peptide", color = "Source") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_as192_detection
+
+#####################Peptide IDs + MS1 Intensity######################
+plot_as192_detection_ids_ms1_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1)), color= source, size = total_area_MS1)) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of AS192 Peptides: MS1 Intensity", width = 60),
+       x= "Source", y = "Peptide ID", color = "Source", size= "Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_as192_detection_ids_ms1_int
+
+#####################peptide ids + MS2 Intensity######################
+plot_as192_detection_ids_ms2_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1)), color= source, size = total_area_MS2)) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS2))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of AS192 Peptides: MS2 Intensity", width = 60),
+       x= "Source", y = "Peptide ID", color = "Source", size= "Total Area MS2") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_as192_detection_ids_ms2_int
+
+
+#####################peptide ids + LOG MS1 Intensity######################
+plot_as192_detection_ids_log_ms1_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1+1)), color= source, size = log2(total_area_MS1+1))) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS1 +1)))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of AS192 Peptides: Log Scaled MS1 Intensity", width = 60),
+       x= "Source", y = "Peptide ID", color = "Source", size= str_wrap("Log Scaled Total Area MS1", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_as192_detection_ids_log_ms1_int
+
+#####################peptide ids + LOG MS1 Intensity######################
+plot_as192_detection_ids_log_ms2_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1+1)), color= source, size = log2(total_area_MS2+1))) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS2 +1)))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of AS192 Peptides: Log Scaled MS2 Intensity", width = 60),
+       x= "Source", y = "Peptide ID", color = "Source", size= str_wrap("Log Scaled Total Area MS2", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_as192_detection_ids_log_ms2_int
+
+#####################peptide ids + NO MS1 Intensity######################
+plot_as192_ids_detection <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1)), color= source)) +
+  geom_point(size = 5) +
+  scale_color_manual(values = custom_palette) +
+    labs(title = str_wrap("Detection of AS192 Peptides", width = 60),
+       x= "Source", y = "Peptide ID", color = "Source") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_as192_ids_detection
+
+```
+
+### Generating Figures - Peptide Detection (Including Rep 2)
+
+```{r}
+#####################full peptide information + NO MS1 Intensity######################
+plot_w2_as192_detection <- combined_for_fig_no_sky %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_times_detected)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_times_detected)), color= source)) +
+  geom_point(size = 5) +
+  scale_color_manual(values = custom_palette) +
+    labs(title = str_wrap("Detection of AS192 Peptides", width = 60),
+       x= "Source", y = "Peptide", color = "Source") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_w2_as192_detection
+
+#####################peptide ids + NO MS1 Intensity######################
+plot_w2_as192_ids_detection <- combined_for_fig_no_sky %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_times_detected)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(id, desc(total_times_detected)), color= source)) +
+  geom_point(size = 5) +
+  scale_color_manual(values = custom_palette) +
+    labs(title = str_wrap("Detection of AS192 Peptides", width = 60),
+       x= "Source", y = "Peptide ID", color = "Source") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_w2_as192_ids_detection
+```
+
+
+### Generating Figures - Major and Minor Isoforms
+
+```{r}
+
+##################major and minor colors1##########################################
+
+plot_as192_maj_min_peps_detection <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char)) +
+  geom_point(size = 5) +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  labs(title = str_wrap("AS192 Peptide Detection", width = 60),
+       x= "Source", y = "Peptide", color = str_wrap("Major or Minor Isoform", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+plot_as192_maj_min_peps_detection 
+
+##################major and minor colors - MS1 Intensity####################################
+
+plot_as192_maj_min_peps_detection_ms1 <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = total_area_MS1)) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  labs(title = str_wrap("AS192 Peptide Detection: MS1 Intensity", width = 60),
+       x= "Source", y = "Peptide", color = str_wrap("Major or Minor Isoform", width = 15), size= "Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+plot_as192_maj_min_peps_detection_ms1
+
+##################major and minor colors - Log Scaled MS1 Intensity#########################
+
+plot_as192_maj_min_peps_detection_logms1 <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = log2(total_area_MS1 +1))) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS1 +1)))) +
+  labs(title = str_wrap("AS192 Peptide Detection: Log Scaled MS1 Intensity", width = 60),
+       x= "Source", y = "Peptide", color = str_wrap("Major or Minor Isoform", width = 15), size= str_wrap("Log Scaled Total Area MS1", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+plot_as192_maj_min_peps_detection_logms1
+
+##MS2
+
+##################major and minor colors - MS2 Intensity#########################
+plot_as192_maj_min_peps_detection_ms2 <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = total_area_MS2)) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS2))) +
+  labs(title = str_wrap("AS192 Peptide Detection: MS2 Intensity", width = 60),
+       x= "Source", y = "Peptide", color = str_wrap("Major or Minor Isoform", width = 15), size= "Total Area MS2") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+plot_as192_maj_min_peps_detection_ms2
+
+##################major and minor colors - Log Scaled MS2 Intensity#########################
+plot_as192_maj_min_peps_detection_logms2 <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = log2(total_area_MS2 +1))) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS2 +1)))) +
+  labs(title = str_wrap("AS192 Peptide Detection: Log Scaled MS2 Intensity", width = 60),
+       x= "Source", y = "Peptide", color = str_wrap("Major or Minor Isoform", width = 15), size= str_wrap("Log Scaled Total Area MS2", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+plot_as192_maj_min_peps_detection_logms2
+
+
+################## PEP IDs- major and minor colors##########################################
+
+plot_as192_maj_min_ids_detection <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1)), color= is_major_gene_isoform_char)) +
+  geom_point(size = 5) +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  labs(title = str_wrap("AS192 Peptide Detection", width = 60),
+       x= "Source", y = "Peptide ID", color = str_wrap("Major or Minor Isoform", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+plot_as192_maj_min_ids_detection 
+
+################## PEP ID- major and minor colors - MS1 Intensity############################
+
+plot_as192_maj_min_ids_detection_ms1 <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = total_area_MS1)) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  labs(title = str_wrap("AS192 Peptide Detection: MS1 Intensity", width = 60),
+       x= "Source", y = "Peptide ID", color = str_wrap("Major or Minor Isoform", width = 15), size= "Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+plot_as192_maj_min_ids_detection_ms1
+
+################## PEP IDs-major and minor colors - Log Scaled MS1 Intensity#################
+
+plot_as192_maj_min_ids_detection_logms1 <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = log2(total_area_MS1 +1))) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS1 +1)))) +
+  labs(title = str_wrap("AS192 Peptide Detection: Log Scaled MS1 Intensity", width = 60),
+       x= "Source", y = "Peptide ID", color = str_wrap("Major or Minor Isoform", width = 15), size= str_wrap("Log Scaled Total Area MS1", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+plot_as192_maj_min_ids_detection_logms1
+
+################## PEP IDs- major and minor colors - MS2 Intensity#########################
+plot_as192_maj_min_ids_detection_ms2 <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = total_area_MS2)) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS2))) +
+  labs(title = str_wrap("AS192 Peptide Detection: MS2 Intensity", width = 60),
+       x= "Source", y = "Peptide ID", color = str_wrap("Major or Minor Isoform", width = 15), size= "Total Area MS2") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+plot_as192_maj_min_ids_detection_ms2
+
+##################major and minor colors - Log Scaled MS2 Intensity#########################
+plot_as192_maj_min_ids_detection_logms2 <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = log2(total_area_MS2 +1))) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS2 +1)))) +
+  labs(title = str_wrap("AS192 Peptide Detection: Log Scaled MS2 Intensity", width = 60),
+       x= "Source", y = "Peptide ID", color = str_wrap("Major or Minor Isoform", width = 15), size= str_wrap("Log Scaled Total Area MS2", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+plot_as192_maj_min_ids_detection_logms2
+
+##################### FACETING by major and minor ###########################################
+
+plot_as192_facet_maj_min_peps_detection <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char)) +
+  facet_wrap(~ is_major_gene_isoform_char ) +
+  geom_point(size = 5) +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  labs(title = str_wrap("AS192 Peptide Detection", width = 60),
+       x= "Source", y = "Peptide", color = str_wrap("Major or Minor Isoform", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+  guides(color = "none")
+
+plot_as192_facet_maj_min_peps_detection 
+
+##################### x= major and minor, FACETING by source #######################################
+
+plot_as192_facet_source_maj_min_peps_detection <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= is_major_gene_isoform_char, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char)) +
+  facet_wrap(~ source) +
+  geom_point(size = 5) +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  labs(title = str_wrap("AS192 Peptide Detection", width = 60),
+       x= "Source", y = "Peptide", color = str_wrap("Major or Minor Isoform", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+  guides(color = "none")
+
+plot_as192_facet_source_maj_min_peps_detection 
+
+```
+
+### Generating Figures- Bar Plots for Major and Minor
+
+```{r}
+plot_as192_bar_maj_min <- combined_for_fig %>%
+  group_by(Peptide, source) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  ggplot(aes(x = source, fill = is_major_gene_isoform_char)) +
+  geom_bar(position = "stack") +
+    geom_text(stat = "count", aes(label = after_stat(count)), position = position_stack(vjust = 0.5)) +
+  scale_fill_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+  labs(title = "AS192 Peptide Detection",
+       x = "",
+       y = "Number of AS192 Peptides",
+       fill = str_wrap("Major or Minor Isoform", width = 15)) +
+  theme_minimal() +
+    theme(plot.title = element_text(size = 20, hjust = 0.5, face = "bold", color = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line.x = element_line(color= "black"),
+    axis.line.y = element_line(color= "black"),
+    axis.ticks = element_line(color = "black"), 
+    axis.text = element_text(size = 12, color = "black"),
+    axis.title = element_text(size = 14, color = "black")) +
+  scale_y_continuous(expand = c(0, 0))
+
+plot_as192_bar_maj_min
+
+
+```
+
+
+### Generating Figures- Euler Diagram: Comparing Peptide Detection between Tomahto and DDA
+
+```{r}
+###Overall
+
+tom_num_peps <- tom_for_fig_no_sky %>% 
+  distinct(Peptide) %>% 
+  count() %>% 
+  pull() %>% 
+  as.numeric()
+
+tom_detected_peps <- tom_for_fig_no_sky %>% 
+  distinct(Peptide) %>% 
+  pull() 
+
+dda_num_peps <- dda_for_fig %>% 
+  distinct(Peptide) %>% 
+  count() %>% 
+  pull() %>% 
+  as.numeric()
+
+dda_detected_peps <- dda_for_fig %>% 
+  distinct(Peptide) %>% 
+  pull()
+
+tom_and_dda_detected_peps <- intersect(tom_detected_peps, dda_detected_peps)
+tom_and_dda_num_peps <- as.numeric(length(unique(tom_and_dda_detected_peps)))
+
+plot_euler_tom_dda <- c("Tomahto" = tom_num_peps, "DDA" = c(dda_num_peps - tom_and_dda_num_peps), "Tomahto&DDA" = tom_and_dda_num_peps)
+fit1 <- euler(plot_euler_tom_dda, shape = "ellipse")
+plot(fit1,
+     quantities = TRUE,
+     fill = c("#ef3478", "#13b6f1"))
+
+```
+
+### Generating Figures- Euler Diagram: Comparing Replicates
+
+```{r}
+
+######Create Euler diagram for Tomahto replicates with custom colors and labels##########################
+
+# Set custom labels for Tomahto replicates
+tom_custom_labels <- c(
+  "1" = "Tomahto Rep 1",
+  "2" = "Tomahto Rep 2",
+  "3" = "Tomahto Rep 3"
+)
+
+tom_matrix_data <- tom_for_fig_no_sky  %>% 
+  select(Peptide, replicate) %>%
+  distinct() %>%
+  mutate(value = 1) %>%
+  spread(replicate, value, fill = 0)
+
+tom_matrix_data <- tom_matrix_data[, -1]
+
+fit2 <- euler(tom_matrix_data, shape = "ellipse")
+
+par(pty="s")
+
+plot_tomahto_repeatability <- plot(fit2, 
+     quantities = TRUE,
+     fill = c("#f0adc6", "#f0adc6", "#f0adc6","#f279a2", "#f279a2", "#f279a2", "#ef3478"),
+     labels = str_wrap(tom_custom_labels, width = 20))
+
+plot_tomahto_repeatability
+
+########Create Euler diagram for DDA replicates with custom colors and labels##########################
+
+# Set custom labels for DDA replicates
+dda_custom_labels <- c(
+  "1" = "DDA Rep 1",
+  "2" = "DDA Rep 1 & DDA Rep 2",
+  "3" = "DDA Rep 3"
+)
+
+dda_matrix_data <- dda_for_fig %>% 
+  select(Peptide, replicate) %>%
+  distinct() %>%
+  mutate(value = 1) %>%
+  spread(replicate, value, fill = 0)
+
+dda_matrix_data <- dda_matrix_data[, -1]
+
+fit3 <- euler(dda_matrix_data, shape = "ellipse")
+
+#adding white space to the left of the DDA euler
+par(pty="s")
+
+# Plot the Euler diagram
+plot_dda_repeatability <- plot(fit3, 
+     quantities = TRUE,
+     fill = c("#aadaee", "#73c8ef"),
+     labels = str_wrap(dda_custom_labels, width = 6))
+
+plot_dda_repeatability
+
+##plot data
+ratio_v <- dda_num_peps/tom_num_peps
+blank <- plot(0)
+
+#grid.arrange(plot_dda_repeatability, plot_tomahto_repeatability, ncol = 2, widths = c(ratio_v, 1))
+
+#ggarrange(plotlist = list(plot_dda_repeatability, plot_tomahto_repeatability), ncol = 3, align = "hv", widths = c(ratio_v, 1))
+
+# layout
+layout <- matrix(c(0, 1, 2), ncol = 3, byrow = TRUE)
+
+grid.arrange(blank, plot_dda_repeatability, plot_tomahto_repeatability, ncol = 3, widths = c(0.1, ratio_v, 1), layout_matrix = layout)
+```
+
+### Save File with no Sky
+
+```{r}
+write_csv(tom_for_fig_no_sky, "240313_Tomahto_CID_Rep2.csv")
+```
+

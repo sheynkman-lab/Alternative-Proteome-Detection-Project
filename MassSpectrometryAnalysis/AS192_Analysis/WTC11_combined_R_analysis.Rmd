@@ -1,0 +1,877 @@
+---
+title: "WTC11 Combined Analysis"
+author: "Jennifer Korchak"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Availability
+
+**Raw data files, Proteome Discoverer PSM files, Tomahto Results files must be downloaded from the [PRIDE archive](https://www.ebi.ac.uk/pride/archive) using accessions PXD050904 and PXD050909.**
+
+**Skyline reports for shTMTpro and TMTpro labeled peptides must be generated from the .raw files based on the settings described in the Methods section of the manuscript [IS-PRM-based peptide targeting informed by long-read sequencing for alternative proteome detection](https://doi.org/10.1101/2024.04.01.587549).** 
+
+File paths in the *Read in Files* section will need to be changed accordingly.
+
+# Setting up the Workspace
+
+## Load packages
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(stringr)
+library(ggtree)
+library(eulerr)
+library(gridExtra)
+library(ggpubr)
+
+subset(data.frame(sessioninfo::package_info()), attached==TRUE, c(package, loadedversion))
+```
+
+## Read in Files
+
+```{r, message=FALSE}
+# Set experiment name for automatic file production (date will be automatically included)
+R_experiment_name <- "R_WTC11_Combined" 
+
+#Read in AS192 peptide files
+as192 <- read_table("AS192.txt", col_names = FALSE) %>% 
+  pull()
+as192_info <- read_csv("as192_annotations_table_1.csv") %>% 
+  mutate(id = paste("AS192", row_number(), sep = "_"))
+
+#Read in MS Novelty File
+as192_novelty <- read_csv("192peptide_MS_evidence_TRUNCATED.csv")
+as192_novelty_info <- left_join(as192_info, as192_novelty, join_by("peptide" == "Peptide"))
+
+
+###############################Read in Files#####################################################
+
+unfrac_dda_hcd_tmt <- read_csv("240313_R_WTC11_Unfrac_SKYLINE_DDA_TMT_OUTPUT.csv") %>% 
+  select(Peptide, DDA_detection_count, `Charge`, `Total Area MS1`, `Total Area`, exp.x) %>% 
+  rename(num_detected = DDA_detection_count, charge = Charge) %>% 
+  mutate(condition = "Unfractionated DDA HCD", 
+         source = "DDA",
+         fragmentation = "HCD",
+         replicate = as.numeric(sub(".*_([1-3])", "\\1", exp.x)))
+
+unfrac_dda_hcd_sh <- read_csv("240313_R_WTC11_Unfrac_SKYLINE_DDA_SH_OUTPUT.csv") %>% 
+  select(Peptide, DDA_detection_count, `Charge`, `Total Area MS1`, `Total Area`, exp.x) %>% 
+  rename(num_detected = DDA_detection_count, charge = Charge) %>% 
+  mutate(condition = "Unfractionated DDA HCD",
+         source = "DDA",
+         fragmentation = "HCD",
+         replicate = as.numeric(sub(".*_([1-3])", "\\1", exp.x)))
+
+unfrac_tom_hcd <- read_csv("240313_R_WTC11_Unfrac_SKYLINE_TOM_OUTPUT.csv") %>% 
+  select(Peptide, tomahto_detection_count, z, `Total Area MS1`,`Total Area`, exp.x) %>% 
+  rename(num_detected = tomahto_detection_count, charge = z) %>% 
+  mutate(condition = "Unfractionated Tomahto HCD",
+         source = "Tomahto",
+         fragmentation = "HCD",
+         replicate = as.numeric(sub(".*_([1-3])", "\\1", exp.x)))
+
+unfrac_tom_hcd_rep_one <- read_csv("240313_Tomahto_HCD_Rep1.csv")
+unfrac_tom_hcd_rep_one <- unfrac_tom_hcd_rep_one %>% 
+  filter(replicate == 1 & source_fragmenation == "Tomahto HCD") %>% 
+  mutate(condition = "Unfractionated Tomahto HCD", exp.x = "tom_1") %>% 
+  select(Peptide, charge, num_detected, total_area_MS1, total_area_MS2, condition, source, fragmentation, replicate, id, genes, isoforms, is_major_gene_isoform, exp.x) %>% 
+  group_by(Peptide, source, fragmentation) %>%
+  mutate(total_times_detected = n()) %>%
+  ungroup()
+
+unfrac_tom_cid <- read_csv("240304_R_WTC11_Unfrac_CID_SKYLINE_TOM_OUTPUT.csv") %>% 
+  select(Peptide, tomahto_detection_count, z, `Total Area MS1`,`Total Area`, exp.x) %>% 
+  rename(num_detected = tomahto_detection_count, charge = z) %>% 
+  mutate(condition = "Unfractionated Tomahto CID",
+         source = "Tomahto",
+         fragmentation = "CID",
+         replicate = as.numeric(sub(".*_([1-3])", "\\1", exp.x)))
+
+unfrac_tom_cid_rep_two <- read_csv("240313_Tomahto_CID_Rep2.csv")
+unfrac_tom_cid_rep_two <- unfrac_tom_cid_rep_two %>% 
+  filter(replicate == 2)
+unfrac_tom_cid_rep_two <- left_join(unfrac_tom_cid_rep_two, as192_info, join_by(Peptide == peptide))
+unfrac_tom_cid_rep_two <- unfrac_tom_cid_rep_two %>% 
+  mutate(total_area_MS1 = NA, total_area_MS2 = NA, condition = "Unfractionated Tomahto CID", is_major_gene_isoform_char = ifelse(is_major_gene_isoform, "major", "minor"), fragmentation = "CID") %>% 
+  select(Peptide, z, num_detected, total_area_MS1, total_area_MS2, condition, source, fragmentation, replicate, id, genes, isoforms, is_major_gene_isoform, exp) %>% 
+  rename(exp.x = exp, charge = z) %>% 
+  group_by(Peptide, source, fragmentation) %>%
+  mutate(total_times_detected = n()) %>%
+  ungroup()
+unfrac_tom_cid_rep_two$total_area_MS1 <- as.numeric(unfrac_tom_cid_rep_two$total_area_MS1)
+unfrac_tom_cid_rep_two$total_area_MS2 <- as.numeric(unfrac_tom_cid_rep_two$total_area_MS2)
+
+eightfrac_dda_hcd_tmt <- read_csv("240312_R_WTC11_8frac_rep_SKYLINE_DDA_TMT_OUTPUT.csv") %>% 
+  select(Peptide, DDA_detection_count, `Charge`, `Total Area MS1`, `Total Area`, exp.x) %>% 
+  rename(num_detected = DDA_detection_count, charge = Charge) %>% 
+  mutate(condition = "8 Fraction DDA HCD",
+         source = "DDA",
+         fragmentation = "HCD",
+         replicate = as.numeric(sub(".*_([1-3])_.*", "\\1", exp.x)))
+
+eightfrac_dda_hcd_sh <- read_csv("240312_R_WTC11_8frac_rep_SKYLINE_DDA_SH_OUTPUT.csv") %>% 
+  select(Peptide, DDA_detection_count, `Charge`, `Total Area MS1`, `Total Area`, exp.x) %>% 
+  rename(num_detected = DDA_detection_count, charge = Charge) %>% 
+  mutate(condition = "8 Fraction DDA HCD",
+         source = "DDA",
+         fragmentation = "HCD",
+         replicate = as.numeric(sub(".*_([1-3])_.*", "\\1", exp.x)))
+
+eightfrac_tom_cid <- read_csv("240312_R_WTC11_8frac_rep_SKYLINE_TOM_OUTPUT.csv") %>% 
+  select(Peptide, tomahto_detection_count, z, `Total Area MS1`,`Total Area`, exp.x) %>% 
+  rename(num_detected = tomahto_detection_count, charge = z) %>% 
+  mutate(condition = "8 Fraction Tomahto CID",
+         source = "Tomahto",
+         fragmentation = "CID",
+         replicate = as.numeric(sub(".*_([1-3])_.*", "\\1", exp.x)))
+
+#############################Combined Dataframe#################################
+
+
+combined_all_peptides <- bind_rows(eightfrac_dda_hcd_tmt, eightfrac_tom_cid, unfrac_dda_hcd_tmt, unfrac_tom_hcd, unfrac_tom_cid) %>% 
+  rename(total_area_MS1 = "Total Area MS1", total_area_MS2 = "Total Area")
+
+combined_all_peptides <- left_join(combined_all_peptides, as192_info, join_by(Peptide == peptide))
+
+combined_all_peptides <- bind_rows(combined_all_peptides, unfrac_tom_hcd_rep_one, unfrac_tom_cid_rep_two)
+
+combined_all_peptides <- combined_all_peptides %>% 
+  select(Peptide, charge, num_detected, total_area_MS1, total_area_MS2, condition, source, fragmentation, replicate, id, genes, isoforms, is_major_gene_isoform, exp.x) %>% 
+  mutate(is_major_gene_isoform_char = ifelse(is_major_gene_isoform, "major", "minor")) %>% 
+  group_by(Peptide, source, fragmentation) %>%
+  mutate(total_times_detected = n()) %>%
+  ungroup()
+
+combined_all_peptides$total_area_MS1 <- as.numeric(combined_all_peptides$total_area_MS1)
+combined_all_peptides$total_area_MS2 <- as.numeric(combined_all_peptides$total_area_MS2)
+
+###################################################sh peptides#################################
+
+combined_all_triggers <- bind_rows(eightfrac_dda_hcd_sh, unfrac_dda_hcd_sh) %>% 
+  rename(total_area_MS1 = "Total Area MS1", total_area_MS2 = "Total Area")
+
+combined_all_triggers <- left_join(combined_all_triggers, as192_info, join_by(Peptide == peptide))
+
+combined_all_triggers <- combined_all_triggers %>% 
+  select(Peptide, charge, num_detected, total_area_MS1, total_area_MS2, condition, source, fragmentation, replicate, id, genes, isoforms, is_major_gene_isoform, exp.x) %>% 
+  mutate(is_major_gene_isoform_char = ifelse(is_major_gene_isoform, "major", "minor")) %>% 
+  group_by(Peptide, source, fragmentation) %>%
+  mutate(total_times_detected = n()) %>%
+  ungroup()
+
+combined_all_triggers$total_area_MS1 <- as.numeric(combined_all_triggers$total_area_MS1)
+combined_all_triggers$total_area_MS2 <- as.numeric(combined_all_triggers$total_area_MS2)
+
+####################Neat AS192 triggers detected via DDA ######################################
+
+#1 ug of AS192 shTMTpro trigger injected ALONE
+
+as192_neat <-read_csv("240315_AS192_Detected_Triggers_Plus_FALSE_Pos.csv")
+
+####################Neat AS192 triggers detected via Tomahto #######################
+tom_psm_neat <- read_csv("230620_AC9_shTMTpro_AS192_approx1ug_Tomahto_4hr_PSMLog.csv")
+
+###################Neat AS192 Tomahto RESULTS#########################
+tom_results <- read_csv("TOM_230620_AC9_shTMTpro_AS192_TomahtoResult.csv")
+
+###################DDA data from PD############################################
+dda_unfrac_1 <- read_csv("231116_AC11_230914unfract_WTC11_DDA_1_PSMs.csv")
+dda_unfrac_2 <- read_csv("231116_AC11_230914unfract_WTC11_DDA_2_PSMs.csv")
+dda_unfrac_3 <- read_csv("231116_AC11_230914unfract_WTC11_DDA_3_PSMs.csv")
+
+dda_8frac <- read_csv("221026_WTC11TMTpro_DDA_4hr_8Fractions_PSMs.csv")
+
+
+############# Tomahto Results Files#######################
+tom_eightfrac_results <- read_csv("240320_8frac_tom_results.csv")
+tom_unfrac_results <- read_csv("240320_unfrac_tom_results.csv")
+```
+
+### Investigate Quant Channels
+
+```{r}
+tom_eightfrac_results <- tom_eightfrac_results %>% 
+  select(-`% target peaks/trigger peaks (EDJ inserted)`, -`...39`, -`...40`, -`...41`, -`Visual validation (not scan specific)`)
+tom_eightfrac_results <- tom_eightfrac_results %>% 
+  select(-`Visual validation`)
+
+tom_unfrac_results <- tom_unfrac_results %>% 
+  select(-`target_trigger_ratio`)
+
+colnames(tom_eightfrac_results)
+colnames(tom_unfrac_results)
+
+tom_results_joined <- bind_rows(tom_eightfrac_results, tom_unfrac_results)
+
+columns_to_plot <- paste0("Quant ", 1:18)
+
+#OVERALL QUANT COLUMNS: Subsetting the columns
+subset_data <- tom_results_joined[, columns_to_plot]
+
+# Creating a boxplot to visualize the signal in the quant channels
+boxplot(log10(subset_data +1), col = "lightblue", main = "Boxplot of Quant Columns Taken to log10")
+boxplot(subset_data, col = "lightblue", main = "Boxplot of Quant Columns")
+
+tom_results_joined %>% 
+  distinct()
+
+## Goal: assess the quant channels between peptides detected in complex mixture + the FALSE POSITIVES that are NOT in complex mixture
+
+#tom_results = FALSE POSITIVES found in neat AS192 
+false_positives <- tom_results %>% 
+  distinct(Peptide, .keep_all = TRUE)
+
+false_positives_pull <- false_positives %>% 
+  pull(Peptide)
+
+
+#####make dataframe for the observed targets that were ID'd as false positives in AS192 neat
+tom_unfrac_potential_fp <- tom_unfrac_results %>% 
+  distinct(Peptide, .keep_all = TRUE) %>% 
+  filter(Peptide %in% false_positives_pull)
+
+#mutate values to numeric
+tom_unfrac_potential_fp <- tom_unfrac_potential_fp %>%
+  mutate_at(vars(`Quant 1`, `Quant 2`, `Quant 3`, `Quant 4`, `Quant 5`, `Quant 6`, `Quant 7`, `Quant 8`, `Quant 9`, `Quant 10`, `Quant 11`, `Quant 12`, `Quant 13`, `Quant 14`, `Quant 15`, `Quant 16`, `Quant 17`, `Quant 18`, `Sum SN`, `Iso Spec`), as.numeric)
+
+#add sums of channels                                      
+tom_unfrac_potential_fp <- tom_unfrac_potential_fp %>%  
+  mutate(background_channel_sum = rowSums(select(., `Quant 1`, `Quant 2`, `Quant 3`, `Quant 4`, `Quant 5`, `Quant 6`, `Quant 7`, `Quant 8`, `Quant 10`, `Quant 11`, `Quant 12`, `Quant 13`, `Quant 14`, `Quant 15`, `Quant 16`, `Quant 17`, `Quant 18`)), 
+         total_channel_sum = rowSums(select(., `Quant 1`, `Quant 2`, `Quant 3`, `Quant 4`, `Quant 5`, `Quant 6`, `Quant 7`, `Quant 8`, `Quant 9`, `Quant 10`, `Quant 11`, `Quant 12`, `Quant 13`, `Quant 14`, `Quant 15`, `Quant 16`, `Quant 17`, `Quant 18`)),
+         target_channel = `Quant 9`)
+
+#add target/trigger ratio
+tom_unfrac_potential_fp <- tom_unfrac_potential_fp %>% 
+  mutate(target_trigger_ratio = `Target Peaks`/`Trigger Peaks`)
+
+#add TRUE or FALSE if the filters were passed 
+tom_unfrac_potential_fp <- tom_unfrac_potential_fp %>%
+  mutate(passed_filters = (target_trigger_ratio >= 0.5 & `Iso Spec` >= 0.65) | (target_trigger_ratio >= 0.4 & `Iso Spec` == 1))
+
+tom_unfrac_potential_fp <- tom_unfrac_potential_fp %>%
+  mutate(exp = "Unfractionated_WTC11_Tomahto")
+
+
+#######do the same thing for the false_positives dataframe
+false_positives <- false_positives %>%
+  mutate_at(vars(`Quant 1`, `Quant 2`, `Quant 3`, `Quant 4`, `Quant 5`, `Quant 6`, `Quant 7`, `Quant 8`, `Quant 9`, `Quant 10`, `Quant 11`, `Quant 12`, `Quant 13`, `Quant 14`, `Quant 15`, `Quant 16`, `Quant 17`, `Quant 18`, `Sum SN`, `Iso Spec`), as.numeric)
+
+false_positives <- false_positives %>%
+  mutate(background_channel_sum = rowSums(select(., `Quant 1`, `Quant 2`, `Quant 3`, `Quant 4`, `Quant 5`, `Quant 6`, `Quant 7`, `Quant 8`, `Quant 10`, `Quant 11`, `Quant 12`, `Quant 13`, `Quant 14`, `Quant 15`, `Quant 16`, `Quant 17`, `Quant 18`)), 
+         total_channel_sum = rowSums(select(., `Quant 1`, `Quant 2`, `Quant 3`, `Quant 4`, `Quant 5`, `Quant 6`, `Quant 7`, `Quant 8`, `Quant 9`, `Quant 10`, `Quant 11`, `Quant 12`, `Quant 13`, `Quant 14`, `Quant 15`, `Quant 16`, `Quant 17`, `Quant 18`)),
+         target_channel = `Quant 9`)
+
+false_positives <- false_positives %>%
+  mutate(target_trigger_ratio = `Target Peaks`/`Trigger Peaks`)
+
+#add TRUE or FALSE if the filters were passed 
+false_positives <- false_positives %>%
+  mutate(passed_filters = (target_trigger_ratio >= 0.5 & `Iso Spec` >= 0.65) | (target_trigger_ratio >= 0.4 & `Iso Spec` == 1)) 
+
+false_positives <- false_positives %>%
+  mutate(exp = "AS192_Trigger_Neat_Tomahto")
+
+data_for_t_test <- bind_rows(false_positives, tom_unfrac_potential_fp)
+
+t.test(target_channel ~ exp, data = data_for_t_test, var.equal = FALSE)
+
+write_csv(data_for_t_test, "240320_fp_peptides_explore.csv")
+```
+
+
+
+### Investigate Trigger Presence via DDA- AS192 NEAT
+
+```{r}
+triggers_neat <- as192_neat %>% 
+  filter(source == "DDA") %>%
+  distinct(Peptide)
+#104 triggers detected in AS192 neat at 1 ug injection via Tomahto
+```
+
+### Investigate Trigger Presence via Tomahto- AS192 NEAT
+
+```{r}
+triggers_tom_neat <- tom_psm_neat %>% 
+  filter(!(PassFilter == "No sps in range" | PassFilter == "No SPS above BP threshold" | PassFilter == "Failed purity filter" | PassFilter == "False" | PassFilter == "No overlap fragment")) %>% 
+  filter(MS2Type == "Ms2Trig") %>% 
+  distinct(Sequence)
+#158 triggers detected in AS192 neat at 1 ug injection via Tomahto
+
+
+triggers_tom_neat_for_join <- triggers_tom_neat %>% 
+  rename("Peptide" = "Sequence")
+
+################################TRIGGERS FROM NEAT RUN##################################
+all_triggers_neat <- bind_rows(triggers_tom_neat_for_join, triggers)
+
+all_triggers_neat %>% 
+  distinct()
+#174 distinct trigger peptides detected
+
+triggers_neat_pull <- all_triggers_neat %>% 
+  distinct(Peptide) %>% 
+  pull()
+
+triggers_neat_distinct <- all_triggers_neat %>% 
+  distinct(Peptide)
+
+detected_peptides_pull <- combined_all_peptides %>% 
+  distinct(Peptide) %>% 
+  pull()
+#78 peptides detected
+
+combined_all_peptides %>% 
+  distinct(Peptide) %>% 
+  filter(Peptide %in% triggers_neat_pull)
+#all of the triggers_neat_pull are present in the targets
+174-78
+
+combined_all_peptides_distinct <- combined_all_peptides %>% 
+  distinct(Peptide) 
+
+peptides_NOT_detected <- anti_join(as192_novelty, combined_all_peptides_distinct)
+192-114  
+
+triggers_excluding_detected <- triggers_neat_distinct %>% 
+  filter(!(Peptide %in% detected_peptides_pull))
+
+anti_join(peptides_NOT_detected, triggers_excluding_detected)
+#18 peptides not detected 
+192-174 #same as the number of triggers not found = good sanity check
+
+```
+
+### Investigate ALL contaminant "Target" peptides detected in AS192 NEAT (pre-filtering)
+
+```{r}
+contingency_table <- tom_results %>% 
+  distinct(Peptide) %>% 
+  mutate(contaminant = TRUE)
+
+detected_for_contingency <- combined_filtered_as192_novelty %>% 
+  distinct(Peptide) %>% 
+  mutate(detected = TRUE)
+
+as192_for_contingency <- as192_info %>% 
+  select(peptide) %>% 
+  rename(Peptide = peptide)
+
+contingency_table_full <- left_join(as192_for_contingency, contingency_table, by = "Peptide")
+
+contingency_table_full <- left_join(contingency_table_full, detected_for_contingency, by = "Peptide")
+
+contingency_table_full <- contingency_table_full %>% 
+  mutate(contaminant = replace(contaminant, is.na(contaminant), FALSE),
+         detected = replace(detected, is.na(detected), FALSE))
+
+
+# Create the contingency table
+contingency_table_for_chi <- table(contingency_table_full$contaminant, contingency_table_full$detected)
+
+# Perform the chi-square test of independence
+chi_square_test <- chisq.test(contingency_table_for_chi)
+
+
+
+# Print the results
+print(chi_square_test)
+
+chisq.test(contingency_table_for_chi)$expected
+chisq.test(contingency_table_for_chi)$observed
+
+#fisher. test 
+fisher.test(contingency_table_for_chi)
+```
+
+
+### Investigate Trigger Presence via DDA- WTC11 + AS192 Unfrac + 8 Frac
+
+```{r}
+triggers <- combined_all_triggers %>% 
+  distinct(Peptide) 
+#162 distinct trigger peptides detected in dda
+
+targets <- combined_all_peptides %>% 
+  distinct(Peptide)
+#78 target peptides detected in all
+
+anti_join(targets, triggers)
+####4 peptides detected that do not have corresponding DDA trigger detection.     
+#1 IWDIGGQPR   
+#2 QQMPFWMAP   
+#3 TRPKPIITSVPK
+#4 NSGQGCIGG 
+
+anti_join(triggers, triggers_tom_neat, join_by(Peptide == Sequence))
+## 16 peptides found via DDA but not in Tomahto
+
+anti_join(triggers_tom_neat, triggers, join_by(Sequence == Peptide))
+## 12 peptides found in Tomahto but not DDA
+
+anti_join(triggers_neat, triggers) 
+#3 additional trigger peptides found in AS192 neat = 165/ 192 trigger peptides
+
+triggers_pull <- pull(triggers) 
+triggers_pull <- c(triggers_pull, "MLQYCLQGLFHPAR", "QDINLCNGQINFISITGR", "QQNVAHCMLVSNR")
+  
+targets %>% 
+  filter(!(Peptide %in% triggers_pull))
+####not in the triggers found via DDA
+#1 IWDIGGQPR   
+#2 QQMPFWMAP   
+#3 TRPKPIITSVPK
+#4 NSGQGCIGG 
+
+combined_all_peptides %>% 
+  filter(Peptide == "IWDIGGQPR" | Peptide == "QQMPFWMAP" | Peptide == "TRPKPIITSVPK" | Peptide == "NSGQGCIGG") %>% 
+  write_csv("240315_Targets_in_Tomahto_but_no_Trigger_in_DDA.csv")
+## all these peptides are found via Tomahto- investigate these in the software
+
+false_positives_in_as192 <- c("NSGQGCIGG", "VPAQPAAEQR", "HGGCLLQESR", "SPSQGSPIQSSD", "RPASLGCGGWLLPGR")
+
+triggers %>% 
+  filter(Peptide %in% false_positives_in_as192)
+####There ARE triggers found for 4/5 of the "false positives".. so in other cases it could be TRUE positives   
+#1 HGGCLLQESR     
+#2 RPASLGCGGWLLPGR
+#3 SPSQGSPIQSSD   
+#4 VPAQPAAEQR 
+
+targets %>% 
+  filter(Peptide %in% false_positives_in_as192)
+#### 3 peptides that could be false positives found in Tomahto targets....with NSGQGCIGG being most likely to be false positive as trigger was not detected in DDA
+#1 SPSQGSPIQSSD
+#2 NSGQGCIGG   
+#3 HGGCLLQESR 
+
+```
+
+
+
+## Visualize DDA + Tomahto Data
+
+### Custom Palette
+
+```{r}
+custom_palette <- c(
+  "DDA" = "#13b6f1",
+  "Tomahto" = "#ef3478")
+```
+
+### Generating Figures- Bar Plots for Major and Minor
+
+```{r}
+desired_order <- c(
+  "Unfractionated DDA HCD",
+  "Unfractionated Tomahto HCD",
+  "Unfractionated Tomahto CID",
+  "8 Fraction DDA HCD",
+  "8 Fraction Tomahto CID"
+)
+
+# Apply the custom order to the 'condition' variable
+combined_all_peptides <- combined_all_peptides %>%
+  mutate(condition = factor(condition, levels = desired_order)) 
+
+plot_as192_bar_maj_min <- combined_all_peptides %>%
+  group_by(Peptide, condition) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  ggplot(aes(x = condition, fill = is_major_gene_isoform_char)) +
+  geom_bar(position = "stack") +
+    geom_text(stat = "count", aes(label = after_stat(count)), position = position_stack(vjust = 0.5)) +
+  scale_fill_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+  labs(x = "",
+       y = "Number of Detected Endogenous AS192 Peptides",
+       fill = str_wrap("Major or Minor Isoform", width = 15)) +
+  theme_minimal() +
+    theme(plot.title = element_text(size = 20, hjust = 0.5, face = "bold", color = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line.x = element_line(color= "black"),
+    axis.line.y = element_line(color= "black"),
+    axis.ticks = element_line(color = "black"), 
+    axis.text = element_text(size = 10, color = "black"),
+    axis.title = element_text(size = 14, color = "black")) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 15))
+
+plot_as192_bar_maj_min
+
+```
+
+### Generating Major and Minor Dot Plots
+
+```{r}
+##################major and minor colors - Log Scaled MS1 Intensity#########################
+
+plot_as192_maj_min_peps_detection_logms1 <- combined_all_peptides%>% 
+  filter(condition == "Unfractionated DDA HCD" | condition == "Unfractionated Tomahto HCD" | condition == "Unfractionated Tomahto CID") %>% 
+  group_by(Peptide, condition) %>% 
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= condition, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = log10(total_area_MS1 +1))) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(log10(combined_all_peptides$total_area_MS1 +1)))) +
+  labs(title = str_wrap("Unfractionated WTC11- AS192 Peptide Detection: Log Scaled MS1 Intensity", width = 60),
+       x= "", y = "Peptide", color = str_wrap("Major or Minor Isoform", width = 15), size= str_wrap("Log Scaled Total Area MS1", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10))
+
+plot_as192_maj_min_peps_detection_logms1
+
+
+##################major and minor colors - Log Scaled MS2 Intensity#########################
+plot_as192_maj_min_peps_detection_logms2 <- combined_all_peptides%>% 
+  filter(condition == "Unfractionated DDA HCD" | condition == "Unfractionated Tomahto HCD" | condition == "Unfractionated Tomahto CID") %>% 
+  group_by(Peptide, condition) %>%
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= condition, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = log10(total_area_MS2 +1))) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(log10(combined_all_peptides$total_area_MS2 +1)))) +
+  labs(title = str_wrap("Unfractionated WTC11-AS192 Peptide Detection: Log Scaled MS2 Intensity", width = 60),
+       x= "", y = "Peptide", color = str_wrap("Major or Minor Isoform", width = 15), size= str_wrap("Log Scaled Total Area MS2", width = 15)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 15))
+
+plot_as192_maj_min_peps_detection_logms2
+
+##############Overall##################
+plot_as192_maj_min_peps_detection <- combined_all_peptides %>% 
+  filter(condition == "Unfractionated DDA HCD" | condition == "Unfractionated Tomahto HCD" | condition == "Unfractionated Tomahto CID") %>% 
+  group_by(Peptide, condition) %>%
+  arrange(desc(total_area_MS1)) %>% 
+  slice(1) %>%
+ggplot(aes(x= condition, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_all_peptides$total_area_MS1))) +
+  labs(x= "", y = "Detected Endogenous AS192 Peptides in WTC11", color = str_wrap("Major or Minor Isoform", width = 15)) +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 10, color = "black"),
+    axis.title = element_text(size = 14, color = "black")) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 15))
+
+plot_as192_maj_min_peps_detection 
+```
+
+
+### Generating Figures- Euler Diagram: Comparing Peptide Detection between Tomahto and DDA
+
+```{r}
+###Overall
+
+tom_num_peps_hcd <- combined_all_peptides %>% 
+  filter(condition == "Unfractionated Tomahto HCD") %>% 
+  distinct(Peptide) %>% 
+  count() %>% 
+  pull() %>% 
+  as.numeric()
+
+tom_detected_peps_hcd <- combined_all_peptides %>% 
+  filter(condition == "Unfractionated Tomahto HCD") %>% 
+  distinct(Peptide) %>% 
+  pull() 
+
+tom_num_peps_cid <- combined_all_peptides %>% 
+  filter(condition == "Unfractionated Tomahto CID") %>% 
+  distinct(Peptide) %>% 
+  count() %>% 
+  pull() %>% 
+  as.numeric()
+
+tom_detected_peps_cid <- combined_all_peptides %>% 
+  filter(condition == "Unfractionated Tomahto CID") %>% 
+  distinct(Peptide) %>% 
+  pull() 
+
+dda_num_peps <- combined_all_peptides %>% 
+  filter(condition == "Unfractionated DDA HCD") %>%
+  distinct(Peptide) %>% 
+  count() %>% 
+  pull() %>% 
+  as.numeric()
+
+dda_detected_peps <- combined_all_peptides %>% 
+  filter(condition == "Unfractionated DDA HCD") %>%
+  distinct(Peptide) %>% 
+  pull()
+
+tom_and_dda_detected_peps <- intersect(tom_detected_peps, dda_detected_peps)
+tom_and_dda_num_peps <- as.numeric(length(unique(tom_and_dda_detected_peps)))
+
+plot_euler_tom_dda <- c("Tomahto" = tom_num_peps, "DDA" = c(dda_num_peps - tom_and_dda_num_peps), "Tomahto&DDA" = tom_and_dda_num_peps)
+fit1 <- euler(plot_euler_tom_dda, shape = "ellipse")
+plot(fit1,
+     quantities = TRUE,
+     fill = c("#ef3478", "#13b6f1"))
+########################################################################
+tom_hcd_tom_cid_dda_matrix <- combined_all_peptides %>% 
+  filter(condition == "Unfractionated DDA HCD" | condition == "Unfractionated Tomahto HCD" | condition == "Unfractionated Tomahto CID") %>% 
+  select(Peptide, condition) %>%
+  distinct() %>%
+  mutate(value = 1) %>%
+  spread(condition, value, fill = 0)
+
+tom_hcd_tom_cid_dda_matrix <- tom_hcd_tom_cid_dda_matrix[, -1]
+
+fit4 <- euler(tom_hcd_tom_cid_dda_matrix, shape = "ellipse")
+
+par(pty="s")
+
+plot_tom_hcd_tom_cid_dda <- plot(fit4, 
+     quantities = TRUE,
+     fill = c("#ab82ef", "#f279a2", "#ef3478"))
+
+plot_tom_hcd_tom_cid_dda
+
+```
+
+### Generating Figures- Euler Diagram: Comparing Replicates
+
+```{r}
+
+#######################Tomahto HCD Replicates##########################
+
+tom_matrix_data_hcd <- combined_all_peptides %>% 
+  filter(condition == "Unfractionated Tomahto HCD") %>% 
+  select(Peptide, replicate) %>%
+  distinct() %>%
+  mutate(value = 1) %>%
+  spread(replicate, value, fill = 0)
+
+tom_matrix_data_hcd <- tom_matrix_data_hcd[, -1]
+
+fit1 <- euler(tom_matrix_data_hcd, shape = "ellipse")
+
+par(pty="s")
+
+plot_tomahto_repeatability_hcd <- plot(fit1, 
+     quantities = TRUE,
+     fill = c("#f0adc6", "#f0adc6", "#f0adc6","#f279a2", "#f279a2", "#f279a2", "#ef3478"), labels = c(""))
+
+plot_tomahto_repeatability_hcd
+
+#################Tomahto CID Replicates##############################
+
+
+tom_matrix_data_cid <- combined_all_peptides %>% 
+  filter(condition == "Unfractionated Tomahto CID") %>% 
+  select(Peptide, replicate) %>%
+  distinct() %>%
+  mutate(value = 1) %>%
+  spread(replicate, value, fill = 0)
+
+tom_matrix_data_cid <- tom_matrix_data_cid[, -1]
+
+fit2 <- euler(tom_matrix_data_cid, shape = "ellipse")
+
+par(pty="s")
+
+plot_tomahto_repeatability_cid <- plot(fit2, 
+     quantities = TRUE,
+     fill = c("#f0adc6", "#f0adc6", "#f0adc6","#f279a2", "#f279a2", "#f279a2", "#ef3478"), labels = c(""))
+
+plot_tomahto_repeatability_cid
+
+############################DDA Replicates############################
+
+dda_matrix_data <- combined_all_peptides %>% 
+  filter(condition == "Unfractionated DDA HCD") %>% 
+  select(Peptide, replicate) %>%
+  distinct() %>%
+  mutate(value = 1) %>%
+  spread(replicate, value, fill = 0)
+
+dda_matrix_data <- dda_matrix_data[, -1]
+
+fit3 <- euler(dda_matrix_data, shape = "ellipse")
+
+# Plot the Euler diagram
+plot_dda_repeatability <- plot(fit3, 
+     quantities = TRUE,
+     fill = c("#aadaee", "#73c8ef"),
+     labels = c(""))
+
+plot_dda_repeatability
+```
+
+## Novel Peptide or Isoform
+
+```{r}
+combined_all_peptides_as192_novelty <- left_join(combined_all_peptides, as192_novelty, join_by(Peptide == Peptide))
+
+combined_filtered_as192_novelty <- combined_all_peptides_as192_novelty %>% 
+  select(Peptide, condition, genes, isoforms, is_major_gene_isoform_char, total_times_detected, peptide_not_found_in_massive_or_peptide_atlas, isoform_not_in_gencode_v42) %>% 
+  distinct(Peptide, condition, .keep_all = TRUE)
+
+wide_df <- combined_filtered_as192_novelty %>%
+  pivot_wider(
+    names_from = condition,
+    values_from = total_times_detected,
+    values_fill = 0  # Fill missing values with 0
+  )
+
+write_csv(wide_df, "240313_Combined_Peptide_Results_w_Novelty.csv")
+```
+
+## Novel Peptide or Isoform- Including ALL AS192
+
+```{r}
+combined_all_peptides_as192_novelty_ALL <- left_join(as192_novelty_info, combined_all_peptides, join_by(peptide == Peptide), keep = TRUE)
+
+combined_filtered_as192_novelty_ALL <- combined_all_peptides_as192_novelty_ALL %>% 
+  select(peptide, genes.x, isoforms.x, is_major_gene_isoform.x, peptide_not_found_in_massive_or_peptide_atlas, isoform_not_in_gencode_v42,  condition,  total_times_detected) %>% 
+    rename(Peptide = peptide, genes = genes.x, isoforms = isoforms.x, is_major_gene_isoform = is_major_gene_isoform.x) %>% 
+  distinct(Peptide, condition, .keep_all = TRUE)
+
+wide_df_ALL <- combined_filtered_as192_novelty_ALL %>%
+  pivot_wider(
+    names_from = condition,
+    values_from = total_times_detected,
+    values_fill = 0  # Fill missing values with 0
+  )
+
+wide_df_ALL <- wide_df_ALL %>% 
+  mutate(`NA` = ifelse(is.na(`NA`), "undetected", `NA`),
+         `NA` = ifelse(`NA` == 0, "detected", `NA`)) %>% 
+  rename(summary_detected_or_undetected = `NA`) %>% 
+  mutate_at(vars("8 Fraction DDA HCD", 
+                 "8 Fraction Tomahto CID",
+                 "Unfractionated Tomahto HCD",
+                 "Unfractionated Tomahto CID",
+                 "Unfractionated DDA HCD"),
+            ~ifelse(. >= 1, TRUE, FALSE))
+
+wide_df_ALL <- wide_df_ALL %>% 
+  mutate(trigger_detected = ifelse(Peptide %in% triggers_neat_pull, "TRUE", "FALSE"))
+
+write_csv(wide_df_ALL, "240322_Combined_Peptide_Results_w_Novelty_ALL.csv")
+```
+
+## Investigation of WTC11 DDA
+
+```{r}
+dda_unfrac_1_summary <- dda_unfrac_1 %>%
+  filter(Confidence == "High") %>%
+  group_by(Spectrum_File) %>% 
+  summarise(
+    PSMs = n(),
+    Peptides = n_distinct(Sequence),
+    Proteins = n_distinct(Protein_Accessions)
+  )
+
+dda_unfrac_2_summary <- dda_unfrac_2 %>%
+  filter(Confidence == "High") %>%
+  group_by(Spectrum_File) %>% 
+  summarise(
+    PSMs = n(),
+    Peptides = n_distinct(Sequence),
+    Proteins = n_distinct(Protein_Accessions)
+  )
+
+dda_unfrac_3_summary <- dda_unfrac_3 %>%
+  filter(Confidence == "High") %>%
+  group_by(Spectrum_File) %>% 
+  summarise(
+    PSMs = n(),
+    Peptides = n_distinct(Sequence),
+    Proteins = n_distinct(Protein_Accessions)
+  )
+
+dda_8frac_combined_summary <- dda_8frac %>%
+  filter(Confidence == "High") %>%
+  summarise(
+    PSMs = n_distinct(Annotated_Sequence),
+    Peptides = n_distinct(Sequence),
+    Proteins = n_distinct(Protein_Accessions)
+  ) %>% 
+  mutate(Spectrum_File = "8_fraction_combined")
+
+dda_8frac_summary <- dda_8frac %>% 
+  filter(Confidence =="High") %>% 
+  group_by(Spectrum_File) %>% 
+  summarise(
+    PSMs = n(),
+    Peptides = n_distinct(Sequence),
+    Proteins = n_distinct(Protein_Accessions)
+  ) 
+
+dda_combined_information <- bind_rows(dda_unfrac_1_summary, dda_unfrac_2_summary, dda_unfrac_3_summary, dda_8frac_combined_summary, dda_8frac_summary)
+
+write_csv(dda_combined_information, "240317_dda_combined_all_information.csv")
+
+unfrac_dda_combined <- bind_rows(dda_unfrac_1, dda_unfrac_2, dda_unfrac_3)
+
+unfrac_dda_combined %>% 
+  filter(Confidence =="High") %>% 
+  summarise(
+    PSMs = n_distinct(Annotated_Sequence),
+    Peptides = n_distinct(Sequence),
+    Proteins = n_distinct(Protein_Accessions)
+  ) 
+
+dda_8frac %>%
+  filter(Confidence == "High") %>%
+  summarise(
+    PSMs = n(),
+    Peptides = n_distinct(Sequence),
+    Proteins = n_distinct(Protein_Accessions)
+  )
+
+dda_8frac_combined_summary_revised <- dda_8frac %>%
+  filter(Confidence == "High") %>%
+  summarise(
+    PSMs = n_distinct(Annotated_Sequence),
+    Peptides = n_distinct(Sequence),
+    Proteins = n_distinct(Protein_Accessions),
+    "Master Proteins" = n_distinct(Master_Protein_Accessions)
+  ) 
+
+dda_unfrac_combined_summary_revised <- unfrac_dda_combined %>%
+  filter(Confidence == "High") %>%
+  summarise(
+    PSMs = n_distinct(Annotated_Sequence),
+    Peptides = n_distinct(Sequence),
+    Proteins = n_distinct(Protein_Accessions),
+    "Master Proteins" = n_distinct(Master_Protein_Accessions)
+  ) 
+
+# 8frac/ unfrac peptides
+64778/12386
+
+#8frac/ unfrac master proteins
+8673/3415
+
+```
+
+
+### Investigating AS192 In Total
+
+```{r}
+as192_info %>% 
+  filter(is_major_gene_isoform == "TRUE") %>% 
+  distinct(isoforms)
+#55 major isoforms
+
+as192_info %>% 
+  filter(is_major_gene_isoform == "FALSE") %>% 
+  distinct(isoforms)
+#59 minor isoforms
+
+```
+
+

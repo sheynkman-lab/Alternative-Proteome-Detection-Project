@@ -1,0 +1,997 @@
+---
+title: "03_AS192_shTMTpro_norm_R"
+author: "Jennifer Korchak"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Availability
+
+**Raw data files, Proteome Discoverer PSM files, Tomahto Results files must be downloaded from the [PRIDE archive](https://www.ebi.ac.uk/pride/archive) using accessions PXD050904 and PXD050909.**
+
+**Skyline reports for shTMTpro and TMTpro labeled peptides must be generated from the .raw files based on the settings described in the Methods section of the manuscript [IS-PRM-based peptide targeting informed by long-read sequencing for alternative proteome detection](https://doi.org/10.1101/2024.04.01.587549).** 
+
+File paths in the *Read in Files* section will need to be changed accordingly.
+
+# Setting up the Workspace
+
+## Load packages
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(stringr)
+library(ggtree)
+library(eulerr)
+
+subset(data.frame(sessioninfo::package_info()), attached==TRUE, c(package, loadedversion))
+```
+
+## Read in Files
+
+```{r, message=FALSE}
+# Set experiment name for automatic file production (date will be automatically included)
+R_experiment_name <- "R_AS192_shTMTpro_norm" 
+
+#Read in AS192 peptide files
+as192 <- read_table("AS192.txt", col_names = FALSE) %>% 
+  pull()
+as192_info <- read_csv("as192_annotations_table_1.csv")
+
+#Results files for DDA and Tomahto
+dda <- read_csv("PD_03_AS192_shTMTpro_norm_EDITED_PSM_output.csv", show_col_types = FALSE) %>% 
+  mutate(Peptide = Sequence) #for ease of comparison
+tom <- read_csv("230620_AC9_shTMTpro_AS192_approx1ug_Tomahto_4hr_TomahtoResult.csv", show_col_types = FALSE)
+
+#Skyline Reports for DDA and Tomahto for shTMT AS192 (triggers) and TMTpro AS192 (targets)
+dda_sh <- read_csv("TriggerAS192_neat_MS1_MS2_DDA_shTMTpro_SkylineReport.csv", show_col_types = FALSE)
+dda_tmt <- read_csv("TriggerAS192_neat_MS1_MS2_DDA_TMTpro_SkylineReport.csv", show_col_types = FALSE)
+tom_sh <- read_csv("TriggerAS192_neat_MS1_MS2_Tomahto_shTMTpro_SkylineReport.csv", show_col_types = FALSE)
+tom_tmt <- read_csv("TriggerAS192_neat_MS1_MS2_Tomahto_TMTpro_SkylineReport.csv", show_col_types = FALSE)
+
+#Skyline PSM Log and MS3 Log file to get Trigger Info
+tom_psm <- read_csv("230620_AC9_shTMTpro_AS192_approx1ug_Tomahto_4hr_PSMLog.csv")
+
+```
+
+## Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- list(dda = dda, tom = tom, dda_sh = dda_sh, dda_tmt = dda_tmt, tom_sh = tom_sh, tom_tmt = tom_tmt)
+
+# Create function for summarizing dataframes- Distinct Peptide Number and Number of Rows
+summarize_dataframe <- function(df_name, df) {
+  result <- tibble(
+    DataFrame = df_name,
+    Rows = nrow(df),
+    Distinct_Peptides = n_distinct(df$Peptide), 
+    AS192_Peptides = df %>%
+      filter(Peptide %in% as192) %>%
+      distinct(Peptide) %>%
+      nrow()
+  )
+  return(result)
+}
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_1 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_1 <- bind_rows(summary_table_1)
+
+# Print the summary table
+print(summary_df_1)
+```
+
+# Tomahto Data Analysis
+
+## Look at Tomahto Files
+
+```{r}
+#visualizing the quant channels
+
+columns_to_plot <- paste0("Quant ", 1:18)
+
+# Subsetting the columns
+subset_data <- tom[, columns_to_plot]
+
+# Creating a boxplot to visualize the signal in the quant channels
+boxplot(log10(subset_data +1), col = "lightblue", main = "Boxplot of Quant Columns Taken to log10")
+boxplot(subset_data, col = "lightblue", main = "Boxplot of Quant Columns")
+```
+
+## Adding Column for Target/ Trigger Ratio for Tomahto Files
+
+Metrics for each analysis can be found in the output “_results.csv” files.
+  ratio of target fragment ions observed over trigger fragment ions observed is at least 50%  
+  allow for cases with 40% fragment ion coverage and 100% isospec purity 
+  isospec purity at least 65% 
+
+```{r}
+tom <- tom %>% 
+  mutate(target_trigger_ratio = `Target Peaks`/`Trigger Peaks`)
+```
+
+## Filter targets for metrics
+
+```{r}
+filtered_tom <- tom %>%
+  filter((target_trigger_ratio >= 0.5 & `Iso Spec` >= 0.65) | (target_trigger_ratio >= 0.4 & `Iso Spec` == 1))
+
+filtered_tom <- filtered_tom %>%
+  group_by(Peptide, z) %>%
+  mutate(tomahto_detection_count = n())
+
+filtered_tom %>% 
+  distinct(Peptide)
+```
+
+### Sanity Check 1! What is the difference between tom and filtered_tom? 
+
+```{r}
+check_1 <- anti_join(tom, filtered_tom, by = "MS2 Scan#")
+check_1 %>% 
+  select(Peptide, z, `Iso Spec`, target_trigger_ratio)
+
+#these peptides did not meet the Tomahto filtering criteria and thus were successfully filtered out
+```
+
+## If MS2 Scan# in the Tomahto results file "filtered_tom" is present in the Skyline report "tom_sh" column "Raw Spectrum Ids", pull those rows 
+
+```{r}
+#clean up the scan numbers in the tom_sh files
+tom_sh$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", tom_sh$`Raw Spectrum Ids`)
+tom_sh$`Raw Spectrum Ids` <- gsub(",0,", "", tom_sh$`Raw Spectrum Ids`)
+
+matched_tom_skyline_sh <- inner_join(filtered_tom, tom_sh, join_by("Peptide" == "Peptide", "z" == "Precursor Charge"), relationship = "many-to-many") %>% 
+  filter(str_detect(`Raw Spectrum Ids`, as.character(`MS2 Scan#`)))
+```
+
+## If MS2 Scan# in the Tomahto results file "filtered_tom" is present in the Skyline report "tom_tmt" column "Raw Spectrum Ids", pull those rows 
+
+```{r}
+#clean up the scan numbers in the tom_tmt files
+
+tom_tmt$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", tom_tmt$`Raw Spectrum Ids`)
+tom_tmt$`Raw Spectrum Ids` <- gsub(",0,", "", tom_tmt$`Raw Spectrum Ids`)
+
+matched_tom_skyline_tmt <- inner_join(filtered_tom, tom_tmt, join_by("Peptide" == "Peptide", "z" == "Precursor Charge"), relationship = "many-to-many") %>% 
+  filter(str_detect(`Raw Spectrum Ids`, as.character(`MS2 Scan#`)))
+
+```
+
+### Sanity Check 2! Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- c(list_of_dataframes, list(filtered_tom = filtered_tom, matched_tom_skyline_sh = matched_tom_skyline_sh, matched_tom_skyline_tmt = matched_tom_skyline_tmt))
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_2 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_2 <- bind_rows(summary_table_2)
+
+# Print the summary table
+print(summary_df_2)
+```
+
+## Adding a column to the Skyline files with summed raw intensities
+
+```{r}
+# Define a function to sum numbers in a comma-separated string
+sum_numbers <- function(x) {
+  numbers <- as.numeric(strsplit(x, ",")[[1]])
+  sum(numbers, na.rm = TRUE)
+}
+
+# Mutate a new column in the Skyline TMTpro with the sum of numbers + count scan numbers
+matched_tom_skyline_tmt <- matched_tom_skyline_tmt %>%
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(`Retention Time` = as.numeric(`Retention Time`)) %>%
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1)
+
+# Mutate a new column in the Skyline shTMTpro with the sum of numbers + count scan numbers
+matched_tom_skyline_sh <- matched_tom_skyline_sh %>%
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1)
+
+#check the output
+matched_tom_skyline_tmt %>% 
+  select(Peptide, target_trigger_ratio, `Iso Spec`, `MS2 Scan#`, Sum_Raw_Intensities, scan_count, `Total Area MS1`, `Total Area`) %>% 
+  sample_n(10)
+```
+
+## In matched_tom_skyline_tmt, pull rows that have the highest target_trigger_ratio, Iso Spec, and Sum_Raw_Intensities where Peptide and z are distinct
+
+```{r, warning=FALSE}
+filtered_distinct_tom_tmt <- matched_tom_skyline_tmt %>%
+  group_by(Peptide, z) %>%
+  arrange(desc(target_trigger_ratio), desc(`Target Peaks`), desc(`Iso Spec`), desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+
+filtered_distinct_tom_sh <- matched_tom_skyline_sh %>%
+  group_by(Peptide, z) %>%
+  arrange(desc(target_trigger_ratio), desc(`Target Peaks`), desc(`Iso Spec`), desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+```
+
+
+### Sanity Check 3! Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- c(list_of_dataframes, list(filtered_distinct_tom_sh = filtered_distinct_tom_sh, filtered_distinct_tom_tmt = filtered_distinct_tom_tmt))
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_3 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_3 <- bind_rows(summary_table_3)
+
+# Print the summary table
+print(summary_df_3)
+```
+
+### Sanity Check 4! What is the difference between filtered_tom and filtered_distinct_tom_tmt?
+
+```{r}
+subset_tom <- filtered_tom %>% 
+ select(Peptide, z, `Iso Spec`, target_trigger_ratio, `MS2 Scan#`) 
+
+subset_tom_tmt <- filtered_distinct_tom_tmt %>% 
+ select(Peptide, z, `Iso Spec`, target_trigger_ratio, `MS2 Scan#`) 
+
+check_2_dif <- setdiff(subset_tom, subset_tom_tmt)
+
+check_2_same <- semi_join(subset_tom, subset_tom_tmt)
+
+check_2_dif
+check_2_same
+
+## The peptide entries that are the same are the 'best' based on the metrics of target_trigger_ratio, followed by `Iso Spec`
+```
+
+## Save the filtered_distinct_tom_tmt as a csv
+
+```{r}
+# Get today's date in the format YYMMDD
+current_date <- format(Sys.Date(), "%y%m%d")
+
+# Create the new file name
+new_file_name_1 <- paste(current_date, R_experiment_name, "SKYLINE_TOM_OUTPUT.csv", sep = "_")
+
+# Check if the dataframe has any rows
+if (nrow(filtered_distinct_tom_tmt) > 0) {
+  # Write to CSV if there are rows
+  write.csv(filtered_distinct_tom_tmt, file = new_file_name_1, row.names = FALSE)
+  cat("CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV.\n")
+}
+```
+
+# WORK ON THIS
+## Visualize the Target Peptides from Tomahto Data with Coupled Skyline Info!
+
+```{r}
+#Filter for only one charge state
+
+tom_tmt_for_fig <- filtered_distinct_tom_tmt %>% 
+  group_by(Peptide) %>% 
+  arrange(desc(Sum_Raw_Intensities)) %>% 
+  slice(1) %>%
+  ungroup()
+
+tom_tmt_for_fig %>% 
+  mutate("Total Area Fragment" = as.numeric(`Total Area`) - as.numeric(`Total Area MS1`)) %>%
+  select("Peptide","Total Area MS1", "Total Area", "Total Area Fragment")
+
+tom_tmt_for_fig[, c("Total Area MS1", "Total Area", "Sum_Raw_Intensities")] <- 
+  lapply(tom_tmt_for_fig[, c("Total Area MS1", "Total Area", "Sum_Raw_Intensities")], as.numeric)
+
+# Reshape the data from wide to long format
+long_data <- tidyr::gather(tom_tmt_for_fig, key = "Variable", value = "Value", 
+                           c("Total Area MS1", "Total Area", "Sum_Raw_Intensities"))
+
+# Create the bar graph using ggplot to look at the data
+ggplot(long_data, aes(x = Peptide, y = log2(Value+1), fill = Variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Bar Graph for Peptide Intensity",
+       x = "Peptide", y = "Log2 Intensity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Making the appropriate columns numeric
+tom_tmt_for_fig[, c("Total Area MS1", "Total Area")] <- 
+  lapply(tom_tmt_for_fig[, c("Total Area MS1", "Total Area")], as.numeric)
+
+# Create a Log2 Clustered Dot Plot
+ggplot(tom_tmt_for_fig, aes(x = Peptide, y = log2(`Sum_Raw_Intensities`+1), color = log2(`Total Area`+1), size = log2(`Total Area MS1` +1))) +
+  geom_point(position = position_dodge(width = 0.6)) +
+  labs(title = "Log2 Scaled Clustered Dot Plot for Sum Raw Intensities vs Total Area",
+       x = "Peptide", y = "Log2 Scaled Total Area MS1") +
+  scale_color_viridis_c() +
+  scale_y_continuous(limits = c(0, max(log2(tom_tmt_for_fig$`Sum_Raw_Intensities` + 1), na.rm = TRUE) + 0.5)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Create a Clustered Dot Plot
+ggplot(tom_tmt_for_fig, aes(x = Peptide, y = `Sum_Raw_Intensities`, color =`Total Area`, size = `Total Area MS1`)) +
+  geom_point(position = position_dodge(width = 0.6)) +
+  labs(title = "Clustered Dot Plot for Sum Raw Intensities vs Total Area",
+       x = "Peptide", y = "Total Area MS1") +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+# Tomahto: Paired Trigger and Target Data
+
+## Adding a column to the Tomahto PSM data
+
+```{r}
+tom_psm <- tom_psm %>% 
+  arrange(Scan) %>%
+  mutate("order_by_scan" = row_number()) 
+```
+
+## Tomahto paired Target and Trigger- based on the filtered_distinct_tom_tmt dataframe
+
+```{r}
+# filtered_distinct_tom_tmt contains peptides with highest target_trigger_ratio, Iso Spec, and Sum_Raw_Intensities where Peptide and z are distinct
+
+## Filtering the Tomahto PSM file for the scans that pass the Tomahto results criteria
+
+tom_psm_target <- semi_join(tom_psm, filtered_distinct_tom_tmt, join_by(Scan == `MS2 Scan#`))
+
+## Setting how many lagging rows should be considered when searching for the Trigger that corresponds to the Target
+offsets <- 1:6
+
+## make a function that iterates through the "offsets" set previously
+conditions <- lapply(offsets, function(offset) {
+  tom_psm$MS2Type == "Ms2Trig" &
+  tom_psm$order_by_scan %in% (tom_psm_target$order_by_scan - offset) &
+  tom_psm$PassFilter == "True"
+})
+
+tom_psm_trigger <- tom_psm %>%
+  arrange(Scan) %>%
+  filter(Reduce(`|`, conditions))
+
+filtered_tom_psm_new <- bind_rows(tom_psm_target, tom_psm_trigger)
+  
+filtered_tom_psm_new <- filtered_tom_psm_new %>%
+  arrange(order_by_scan) %>%
+  group_by(Sequence, Charge) %>%
+  filter(!(MS2Type == "Ms2Trig" & lead(MS2Type) == "Ms2Trig")) %>% 
+  ungroup()
+```
+
+## If MS2 Scan# in the Tomahto PSM file "filtered_tom_psm_new" is present in the Skyline report "tom_sh" column "Raw Spectrum Ids", pull those rows 
+
+```{r}
+matched_tom_skyline_PSM_sh <- filtered_tom_psm_new %>%
+  inner_join(tom_sh, by = c("Sequence" = "Peptide", "Charge" = "Precursor Charge"), relationship= "many-to-many") %>%
+  filter(`MS2Type` == "Ms2Trig" & (str_detect(`Raw Spectrum Ids`, as.character(`Scan`))))
+
+# Mutate a new column in the Skyline shTMTpro with the sum of numbers + count scan numbers
+matched_tom_skyline_PSM_sh <- matched_tom_skyline_PSM_sh %>%
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1)
+
+# Pull a representative row for each distinct peptide/ charge state combo
+
+filt_matched_tom_skyline_PSM_sh <- matched_tom_skyline_PSM_sh %>%
+  group_by(Charge, Sequence) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+```
+
+## If MS2 Scan# in the Tomahto results file "filtered_tom_psm_new" is present in the Skyline report "tom_tmt" column "Raw Spectrum Ids", pull those rows 
+
+We should theoretically not see any TMTpro targets from the Tomahto data, as this was only a 'neat' injection of the shTMTpro AS192 peptides.
+
+```{r}
+matched_tom_skyline_PSM_tmt <- filtered_tom_psm_new %>%
+  inner_join(tom_tmt, by = c("Sequence" = "Peptide", "Charge" = "Precursor Charge"), relationship= "many-to-many") %>%
+  filter(`MS2Type` == "Ms2Targ" & (str_detect(`Raw Spectrum Ids`, as.character(`Scan`))))
+
+# Mutate a new column in the Skyline shTMTpro with the sum of numbers + count scan numbers
+matched_tom_skyline_PSM_tmt <- matched_tom_skyline_PSM_tmt %>%
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1)
+
+# Pull a representative row for each distinct peptide/ charge state combo
+
+filt_matched_tom_skyline_PSM_tmt <- matched_tom_skyline_PSM_tmt %>%
+  group_by(Charge, Sequence) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+```
+
+
+## Save combined Skyline output for Tomahto Trigger + Target pairs as .csv
+
+```{r}
+filtered_tom_psm_SKYLINE <- bind_rows(filt_matched_tom_skyline_PSM_sh, filt_matched_tom_skyline_PSM_tmt)
+
+# Get today's date in the format YYMMDD
+current_date <- format(Sys.Date(), "%y%m%d")
+
+# Create the new file name
+new_file_name_2 <- paste(current_date, R_experiment_name, "SKYLINE_TOM_TRIG_TARG.csv", sep = "_")
+
+# Check if the dataframe has any rows
+if (nrow(filtered_tom_psm_SKYLINE) > 0) {
+  # Write to CSV if there are rows
+  write.csv(filtered_tom_psm_SKYLINE, file = new_file_name_2, row.names = FALSE)
+  cat("CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV.\n")
+}
+```
+
+## Visualize Data for Paired Tomahto Trigger + Target
+
+### Create data frames for figures
+
+```{r}
+#Filter for only one charge state
+tom_psm_for_fig <- filtered_tom_psm_SKYLINE %>% 
+  group_by(Sequence, MS2Type) %>% 
+  arrange(desc(Sum_Raw_Intensities)) %>% 
+  slice(1) %>%
+  ungroup()
+
+# Making the appropriate columns numeric
+tom_psm_for_fig[, c("Total Area MS1", "Total Area")] <- 
+  lapply(tom_psm_for_fig[, c("Total Area MS1", "Total Area")], as.numeric)
+
+# Change the variable MS2Type from class "character" to "factor" to reverse the order
+tom_psm_for_fig$MS2Type <- factor(tom_psm_for_fig$MS2Type)
+tom_psm_for_fig$MS2Type <- factor(tom_psm_for_fig$MS2Type, levels = rev(levels(tom_psm_for_fig$MS2Type)))
+
+# Reshape the data from wide to long format
+long_data_psm <- tidyr::gather(tom_psm_for_fig, key = "Variable", value = "Value", 
+                           c("Total Area MS1", "Total Area"))
+
+# Change the variable MS2Type from class "character" to "factor" to reverse the order
+long_data_psm$MS2Type <- factor(long_data_psm$MS2Type)
+long_data_psm$MS2Type <- factor(long_data_psm$MS2Type, levels = rev(levels(long_data_psm$MS2Type)))
+```
+
+### Create bar plots of paired trigger/target data
+
+```{r}
+# faceted by MS2Type
+ggplot(long_data_psm, aes(x = Sequence, y = log2(Value+1), fill = Variable)) +
+  facet_wrap(~MS2Type) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Peptide Intensity: Tomahto Target vs Trigger",
+       x = "Peptide", y = "Log2 Intensity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        plot.title = element_text(size = 10))
+
+# Create the bar graph using ggplot to look at the data-MS1
+ggplot(tom_psm_for_fig, aes(x = Sequence, y = log2(`Total Area MS1` + 1), fill = MS2Type)) +
+  geom_bar(stat = "identity", position = position_dodge2(width = 0.9, preserve = "single")) +
+  labs(title = "Peptide MS1 Intensity: Tomahto Target vs Trigger",
+       x = "Peptide", y = "Log2 Intensity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Create the bar graph using ggplot to look at the data-MS2
+ggplot(tom_psm_for_fig, aes(x = Sequence, y = log2(`Total Area` + 1), fill = MS2Type)) +
+  geom_bar(stat = "identity", position = position_dodge2(width = 0.9, preserve = "single")) +
+  labs(title = "Peptide Intensity MS2: Tomahto Target vs Trigger",
+       x = "Peptide", y = "Log2 Intensity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Create clustered dot plots of paired trigger/target data
+
+```{r}
+# Create a Log2 Clustered Dot Plot
+tom_psm_for_fig  %>%  
+  filter(`Total Area`> 0) %>% 
+  ggplot(aes(x=MS2Type, y = Sequence, color = log2(`Total Area MS1`+1), size = log2(`Total Area` +1))) +
+  geom_point() +
+  labs(title = str_wrap("Tomahto Trigger vs Target Peptide Intensity: Log2 Scaled", width = 30),
+       x= "MS2Type", y = "Peptide", color = "log2(Total Area MS1)", size= "log2(Total Area)") +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+# Create a Clustered Dot Plot
+tom_psm_for_fig %>% 
+  filter(`Total Area`> 0) %>% 
+ggplot( aes(x=MS2Type, y = Sequence, color = `Total Area MS1`, size = `Total Area`)) +
+  geom_point() +
+  labs(title = str_wrap("Clustered Dot Plot for Total Area and Total Area MS1", width = 30),
+       x= "MS2Type", y = "Peptide", color = "Total Area MS1", size= "Total Area") +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+```
+
+# DDA Data Analysis
+
+## Look at DDA Files
+
+```{r}
+#as reminders...
+print(colnames(dda))
+print(summary_df_1)
+
+#visualize the data
+dda %>%
+  filter(Sequence %in% as192) %>%
+  group_by(Peptide) %>%
+  top_n(1, wt = Intensity) %>%
+  arrange(Intensity) %>%
+  ggplot(aes(x = Intensity, y = reorder(Sequence, Intensity))) +
+  geom_col(fill = "skyblue", width = 0.7) +
+  labs(title = "Bar Plot of AS192 Trigger Peptide Intensity from DDA",
+       x = "Intensity (from PD)", y = "Sequence") +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 2))
+
+#log scaled
+dda %>%
+  filter(Sequence %in% as192) %>%
+  group_by(Peptide) %>%
+  top_n(1, wt = Intensity) %>%
+  mutate(log_Intensity = log2(Intensity +1)) %>% 
+  arrange(log_Intensity) %>%
+  ggplot(aes(x = log2(Intensity +1), y = reorder(Sequence, log_Intensity))) +
+  geom_col(fill = "skyblue", width = 0.7) +
+  labs(title = "Bar Plot of Log Scaled AS192 Trigger Peptide Intensity",
+       x = "log2 Intensity (from PD)", y = "Sequence") +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 2))
+```
+
+
+## Filter the DDA data by AS192 Peptides and Other Metrics
+
+*Metrics*
+Percolator PEP Score of </= 0.01
+Isolation Interference </= 35%
+Split into shTMTpro labeled and TMTpro labeled AS192 peptides
+
+### DDA shTMTpro-labeled Triggers 
+
+```{r}
+dda_filtered_sh <- dda %>% 
+  filter(Sequence %in% as192) %>%
+  filter(str_detect(Modifications, "shTMTpro")) %>% 
+  filter(Isolation_Interference_in_Percent <= 35 & Percolator_PEP <= 0.01)
+
+dda_filtered_sh <- dda_filtered_sh %>%
+  group_by(Sequence, Charge) %>%
+  mutate(DDA_detection_count = n()) %>% 
+  ungroup()
+
+dda_filtered_sh_distinct <- dda_filtered_sh %>% 
+  group_by(Sequence, Charge) %>%
+  top_n(1, wt = Intensity) %>% 
+  ungroup()
+```
+
+### Sanity Check 5! What is the difference between dda, dda_filtered_sh, and dda_filtered_sh_distinct?
+
+Ensuring that the PSMs filtered out do not meet the conditions of PEP Score <0.01 and Isolation Interference < 35%
+
+```{r}
+check_3 <- anti_join(dda, dda_filtered_sh, by = "First_Scan")
+check_3 %>% 
+  select(Sequence, Charge, Isolation_Interference_in_Percent, Percolator_PEP)
+
+check_4 <- anti_join(dda_filtered_sh, dda_filtered_sh_distinct, by = "First_Scan")
+check_4 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, Isolation_Interference_in_Percent, Percolator_PEP, DDA_detection_count)
+
+dda_filtered_sh %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, Isolation_Interference_in_Percent, Percolator_PEP, DDA_detection_count)
+
+dda_filtered_sh_distinct %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, Isolation_Interference_in_Percent, Percolator_PEP, DDA_detection_count)
+```
+
+### DDA TMTpro-labeled Targets
+
+```{r}
+dda_filtered_tmt <- dda %>% 
+  filter(Sequence %in% as192) %>%
+  filter(!str_detect(Modifications, "shTMTpro")) %>% 
+  filter(str_detect(Modifications, "TMTpro")) %>% 
+  filter(Isolation_Interference_in_Percent <= 35 & Percolator_PEP <= 0.01)
+
+dda_filtered_tmt <- dda_filtered_tmt %>%
+  group_by(Sequence, Charge) %>%
+  mutate(DDA_detection_count = n()) %>% 
+  ungroup()
+
+dda_filtered_tmt_distinct <- dda_filtered_tmt %>% 
+  group_by(Sequence, Charge) %>%
+  top_n(1, wt = Intensity) %>% 
+  ungroup()
+```
+
+### Sanity Check 6! What is the difference between dda, dda_filtered_tmt, and dda_filtered_tmt_distinct?
+
+Ensuring that the PSMs filtered out do not meet the conditions of PEP Score <0.01 and Isolation Interference < 35%
+
+```{r}
+check_5 <- anti_join(dda, dda_filtered_tmt, by = "First_Scan")
+check_5 %>% 
+  select(Sequence, Charge, Isolation_Interference_in_Percent, Percolator_PEP)
+
+check_6 <- anti_join(dda_filtered_tmt, dda_filtered_tmt_distinct, by = "First_Scan")
+check_6 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, Isolation_Interference_in_Percent, Percolator_PEP, DDA_detection_count)
+
+dda_filtered_tmt %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, Isolation_Interference_in_Percent, Percolator_PEP, DDA_detection_count)
+
+dda_filtered_tmt_distinct %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, Isolation_Interference_in_Percent, Percolator_PEP, DDA_detection_count)
+```
+
+## Save dda_filtered_sh_distinct and dda_filtered_tmt_distinct as .csv's
+
+```{r}
+# Get today's date in the format YYMMDD
+current_date <- format(Sys.Date(), "%y%m%d")
+
+# Create the new file name
+new_file_name_3 <- paste(current_date, R_experiment_name, "DDA_SH_FILT_OUTPUT.csv", sep = "_")
+
+# Check if the dataframe has any rows
+if (nrow(dda_filtered_sh_distinct) > 0) {
+  # Write to CSV if there are rows
+  write.csv(dda_filtered_sh_distinct, file = new_file_name_3, row.names = FALSE)
+  cat("dda_filtered_sh_distinct CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for dda_filtered_sh_distinct.\n")
+}
+
+# Create the new file name
+new_file_name_4 <- paste(current_date, R_experiment_name, "DDA_TMT_FILT_OUTPUT.csv", sep = "_")
+
+# Check if the dataframe has any rows
+if (nrow(dda_filtered_tmt_distinct) > 0) {
+  # Write to CSV if there are rows
+  write.csv(dda_filtered_sh_distinct, file = new_file_name_4, row.names = FALSE)
+  cat("dda_filtered_tmt_distinct CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for dda_filtered_tmt_distinct.\n")
+}
+```
+
+## If Master_Scans in the PD PSM file "dda_filtered_sh" is present in the Skyline report "dda_sh" column "Raw Spectrum Ids", pull those rows 
+
+Master Scans in PD = the precursor scan number(s) 
+
+```{r}
+#clean up the scan numbers in the dda_sh files
+dda_sh$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", dda_sh$`Raw Spectrum Ids`)
+dda_sh$`Raw Spectrum Ids` <- gsub(",0,", "", dda_sh$`Raw Spectrum Ids`)
+
+matched_dda_skyline_sh <- inner_join(dda_filtered_sh, dda_sh, join_by("Sequence" == "Peptide", "Charge" == "Precursor Charge"), relationship = "many-to-many") %>% 
+  filter(str_detect(`Raw Spectrum Ids`, as.character(Master_Scans))) %>% 
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1) %>% 
+  ungroup()
+
+matched_dda_skyline_sh_distinct <- matched_dda_skyline_sh %>% 
+  group_by(Charge, Sequence) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+```
+
+### Sanity Check 7! What is the difference between matched_dda_skyline_sh_distinct and dda_filtered_sh_distinct?
+
+```{r}
+anti_join(dda_filtered_sh_distinct, matched_dda_skyline_sh_distinct, join_by(Peptide, Charge)) #same peptides
+
+check_7 <- anti_join(dda_filtered_sh_distinct, matched_dda_skyline_sh_distinct, by = "Master_Scans")
+check_7 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, Isolation_Interference_in_Percent, Percolator_PEP, DDA_detection_count, First_Scan, Master_Scans)
+
+check_8 <- anti_join(matched_dda_skyline_sh_distinct, dda_filtered_sh_distinct, by = "Master_Scans")
+check_8 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, Isolation_Interference_in_Percent, Percolator_PEP, DDA_detection_count, First_Scan, Master_Scans)
+```
+
+## If Master_Scans in the PD PSM file "dda_filtered_tmt" is present in the Skyline report "dda_tmt" column "Raw Spectrum Ids", pull those rows 
+
+```{r}
+#clean up the scan numbers in the dda_sh files
+dda_tmt$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", dda_tmt$`Raw Spectrum Ids`)
+dda_tmt$`Raw Spectrum Ids` <- gsub(",0,", "", dda_tmt$`Raw Spectrum Ids`)
+
+matched_dda_skyline_tmt <- inner_join(dda_filtered_tmt, dda_tmt, join_by("Sequence" == "Peptide", "Charge" == "Precursor Charge"), relationship = "many-to-many") %>% 
+  filter(str_detect(`Raw Spectrum Ids`, as.character(Master_Scans))) %>% 
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1) %>% 
+  ungroup()
+
+matched_dda_skyline_tmt_distinct <- matched_dda_skyline_tmt %>% 
+  group_by(Charge, Sequence) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+```
+
+### Sanity Check 8! Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- c(list_of_dataframes, list(dda_filtered_sh= dda_filtered_sh, matched_dda_skyline_sh = matched_dda_skyline_sh, matched_dda_skyline_tmt = matched_dda_skyline_tmt))
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_4 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_4 <- bind_rows(summary_table_4)
+
+# Print the summary table
+print(summary_df_4)
+```
+
+## Save matched_dda_skyline_sh and matched_dda_skyline_tmt as .csv's
+
+```{r}
+# Get today's date in the format YYMMDD
+current_date <- format(Sys.Date(), "%y%m%d")
+
+# Create the new file name
+new_file_name_5 <- paste(current_date, R_experiment_name, "SKYLINE_DDA_SH_OUTPUT.csv", sep = "_")
+
+# Check if the dataframe has any rows
+if (nrow(matched_dda_skyline_sh) > 0) {
+  # Write to CSV if there are rows
+  write.csv(matched_dda_skyline_sh, file = new_file_name_5, row.names = FALSE)
+  cat("matched_dda_skyline_sh CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for matched_dda_skyline_sh.\n")
+}
+
+# Create the new file name
+new_file_name_6 <- paste(current_date, R_experiment_name, "SKYLINE_DDA_TMT_OUTPUT.csv", sep = "_")
+
+write_csv(matched_dda_skyline_tmt, file = new_file_name_5)
+
+# Check if the dataframe has any rows
+if (nrow(matched_dda_skyline_tmt) > 0) {
+  # Write to CSV if there are rows
+  write.csv(matched_dda_skyline_tmt, file = new_file_name_6, row.names = FALSE)
+  cat("matched_dda_skyline_tmt CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for matched_dda_skyline_tmt.\n")
+}
+```
+
+## Visualize DDA + Tomahto Data
+
+```{r}
+## make matched_dda_skyline_tmt_distinct and filtered_distinct_tom_tmt compatible to be joined
+
+dda_for_fig <- matched_dda_skyline_tmt_distinct %>% 
+  group_by(Peptide) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  select(Peptide, DDA_detection_count, `Precursor Mz`, `Total Area MS1`, `Total Area`) %>% 
+  rename(num_detected = DDA_detection_count) %>% 
+  mutate(source = "DDA")
+
+tom_for_fig <- filtered_distinct_tom_tmt %>% 
+  group_by(Peptide) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  select(Peptide, tomahto_detection_count, `Precursor Mz`, `Total Area MS1`,`Total Area`) %>% 
+  rename(num_detected = tomahto_detection_count) %>% 
+  mutate(source = "Tomahto")
+
+combined_for_fig <- bind_rows(dda_for_fig, tom_for_fig) %>% 
+  rename(charge = "Precursor Mz", total_area_MS1 = "Total Area MS1", total_area_MS2 = "Total Area")
+
+#add major/minor isoform annotation
+combined_for_fig <- left_join(combined_for_fig, as192_info, join_by(Peptide == peptide))
+
+combined_for_fig <- combined_for_fig %>% 
+  select(Peptide, charge, num_detected, total_area_MS1, total_area_MS2, source, genes, isoforms, is_major_gene_isoform) %>% 
+  mutate(is_major_gene_isoform_char = ifelse(is_major_gene_isoform, "major", "minor")) 
+
+combined_for_fig$total_area_MS1 <- as.numeric(combined_for_fig$total_area_MS1)
+combined_for_fig$total_area_MS2 <- as.numeric(combined_for_fig$total_area_MS2)
+
+# Create a Clustered Dot Plot
+combined_for_fig %>% 
+  group_by(Peptide) %>% 
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = total_area_MS1)) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "darkblue", "minor" = "darkorange")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  labs(title = str_wrap("Clustered Dot Plot for Total Area MS1", width = 30),
+       x= "Source", y = "Peptide", color = "Major or Minor", size= "Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+```
+
+#### TESTING
+```{r}
+####################TESTING
+
+dda_for_fig_TEST <- matched_dda_skyline_sh_distinct %>% 
+  group_by(Peptide) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  select(Peptide, DDA_detection_count, `Precursor Mz`, `Total Area MS1`, `Total Area`) %>% 
+  rename(num_detected = DDA_detection_count) %>% 
+  mutate(source = "DDA")
+
+combined_for_fig_TEST <- bind_rows(dda_for_fig_TEST, tom_for_fig) %>% 
+  rename(charge = "Precursor Mz", total_area_MS1 = "Total Area MS1", total_area_MS2 = "Total Area")
+
+#add major/minor isoform annotation
+combined_for_fig_TEST <- left_join(combined_for_fig_TEST, as192_info, join_by(Peptide == peptide))
+
+combined_for_fig_TEST <- combined_for_fig_TEST %>% 
+  select(Peptide, charge, num_detected, total_area_MS1, total_area_MS2, source, genes, isoforms, is_major_gene_isoform) %>% 
+  mutate(is_major_gene_isoform_char = ifelse(is_major_gene_isoform, "major", "minor"))
+
+combined_for_fig_TEST$total_area_MS1 <- as.numeric(combined_for_fig_TEST$total_area_MS1)
+
+combined_for_fig_TEST$total_area_MS2 <- as.numeric(combined_for_fig_TEST$total_area_MS2)
+
+##MS1
+
+combined_for_fig_TEST %>% 
+  group_by(Peptide) %>% 
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = total_area_MS1)) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig_TEST$total_area_MS1))) +
+  labs(title = str_wrap("Clustered Dot Plot for Total Area MS1", width = 60),
+       x= "Source", y = "Peptide", color = "Major or Minor", size= "Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"), axis.text.y = element_text(size = 6))
+
+##MS1 NO SIZE
+
+combined_for_fig_TEST %>% 
+  group_by(Peptide) %>% 
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char)) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig_TEST$total_area_MS1))) +
+  labs(title = str_wrap("AS192 Peptide Detection", width = 60),
+       x= "Source", y = "Peptide", color = "Major or Minor Isoform") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"), axis.text.y = element_text(size = 6))
+
+##MS1 log2 scaled intensity
+
+combined_for_fig_TEST %>% 
+  group_by(Peptide) %>% 
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = log2(total_area_MS1 +1))) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(log2(combined_for_fig_TEST$total_area_MS1 +1)))) +
+  labs(title = str_wrap("Clustered Dot Plot for log Scaled Total Area MS1", width = 60),
+       x= "Source", y = "Peptide", color = "Major or Minor", size= " Log Scaled Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"), axis.text.y = element_text(size = 6))
+
+##MS2
+combined_for_fig_TEST %>% 
+  group_by(Peptide) %>% 
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= is_major_gene_isoform_char, size = total_area_MS2)) +
+  geom_point() +
+  scale_color_manual(values = c("major" = "#009988", "minor" = "#EE7733")) +
+    scale_size_continuous(limits = c(1, max(combined_for_fig_TEST$total_area_MS2))) +
+  labs(title = str_wrap("Clustered Dot Plot for Total Area MS2", width = 60),
+       x= "Source", y = "Peptide", color = "Major or Minor", size= "Total Area MS2") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"), 
+        axis.text.y = element_text(size = 6))
+
+##potentially removing cases where total_area_MS1 is 0 for both Tomahto and DDA
+combined_for_fig_TEST %>%
+  filter(!(Peptide %in% Peptide[total_area_MS1 == 0 & source %in% c("DDA", "Tomahto")]))
+
+combo_test <- c("Tomahto" = 25, "DDA" = 2, "Tomahto&DDA" = 6)
+fit2 <- euler(combo_test)
+plot(fit2, quantities =TRUE)
+fit3 <- euler(combo_test, shape= "ellipse")
+plot(fit3, quantities = TRUE)
+
+replicates <- c("DDA_1" = 2, "DDA_2" = 3, "DDA_3" = 1, "DDA_1&DDA_2" = 1, "DDA_2&DDA_3" = 1, "DDA_1&DDA_3" = 1, "DDA_1&DDA_2&DDA_3" = 1)
+fit2 <- euler(replicates)
+plot(fit2, quantities =TRUE)
+
+```
+
+### Euler Diagram: Comparing Tomahto and DDA
+
+```{r}
+tom_num_peps <- tom_for_fig %>% 
+  distinct(Peptide) %>% 
+  count() %>% 
+  pull() %>% 
+  as.numeric()
+
+tom_detected_peps <- tom_for_fig %>% 
+  distinct(Peptide) %>% 
+  pull() 
+
+dda_num_peps <- dda_for_fig %>% 
+  distinct(Peptide) %>% 
+  count() %>% 
+  pull() %>% 
+  as.numeric()
+
+dda_detected_peps <- dda_for_fig %>% 
+  distinct(Peptide) %>% 
+  pull() %>% 
+  as.numeric()
+
+tom_and_dda_detected_peps <- intersect(tom_detected_peps, dda_detected_peps)
+
+tom_and_dda_num_peps <- as.numeric(length(unique(tom_and_dda_detected_peps)))
+
+combo <- c("Tomahto" = tom_num_peps, "DDA" = dda_num_peps, "Tomahto&DDA" = tom_and_dda_num_peps)
+fit1 <- euler(combo)
+plot(fit1, quantities =TRUE)
+```
+
+### Investigate All Triggers!!
+
+```{r}
+tom_psm %>% 
+  filter(!(PassFilter == "No sps in range" | PassFilter == "No SPS above BP threshold" | PassFilter == "Failed purity filter" | PassFilter == "False" | PassFilter == "No overlap fragment")) %>% 
+  filter(MS2Type == "Ms2Trig") %>% 
+  distinct(Sequence)
+  
+```
+
