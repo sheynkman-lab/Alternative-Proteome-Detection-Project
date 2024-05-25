@@ -9,16 +9,17 @@ git clone https://
 cd Long-Read-Proteogenomics
 nextflow run main.nf --config conf/test_with_sqanti.config
 ```
+Raw sequencing data files can be found in the National Institutes of Health (NIH) National Library of Medicine’s Sequence Read Archive with the project accession number [PRJNA1090880](https://www.ncbi.nlm.nih.gov/sra/SRX24041640[accn]) <br />
 
-## DDA data analysis
-*need to ask Jennifer about this -EFW*
+## Mass Spectrometry Data Analysis
 
-## Tomahto data analysis
-*need to ask Jennifer about this -EFW*
+Mass spectrometry raw files, Proteome Discoverer PSM result files, and Tomahto result files have been deposited to the ProteomeXchange Consortium via the [PRIDE archive](https://www.ebi.ac.uk/pride/archive) using accessions PXD050904 and PXD050909. Data will become available upon publication of the manuscript in JASMS. <br />
 
-## Peptide-to-protein isoform genome browser track
-The BED files used to create the [UCSC Genome Browser track](https://www.genome.ucsc.edu/s/emilyfwatts/Alternative%2DProteome%2DDetection) that accompanies this manuscript can be found in [`/TrackRepository`](https://github.com/sheynkman-lab/Alternative-Proteome-Detection-Project/tree/main/TrackRepository). All scripts used to create these files using custom python scripts and [Pogo](https://www.sanger.ac.uk/tool/pogo/) can be found under [`/TrackRepository/scripts`](https://github.com/sheynkman-lab/Alternative-Proteome-Detection-Project/tree/main/TrackRepository/scripts).
+Analysis of the mass spectrometry data was conducted using custom R scripts. Associated scripts and supporting files can be found in [`/MassSpectrometryAnalysis`](). 
 
 ## Statistical Software
 The R script used to create area-proportional Venn diagrams comparing the DDA and Tomahto results can be found in [`/scripts/DDA_vs_Tomahto.Rmd`](https://github.com/sheynkman-lab/Alternative-Proteome-Detection-Project/blob/main/scripts/DDA_vs_Tomahto.Rmd).
+
+## Peptide-to-protein isoform genome browser track
+The BED files used to create the [UCSC Genome Browser track](https://www.genome.ucsc.edu/s/emilyfwatts/Alternative%2DProteome%2DDetection) that accompanies this manuscript can be found in [`/TrackRepository`](https://github.com/sheynkman-lab/Alternative-Proteome-Detection-Project/tree/main/TrackRepository). All scripts used to create these files using custom python scripts and [Pogo](https://www.sanger.ac.uk/tool/pogo/) can be found under [`/TrackRepository/scripts`](https://github.com/sheynkman-lab/Alternative-Proteome-Detection-Project/tree/main/TrackRepository/scripts).
 
