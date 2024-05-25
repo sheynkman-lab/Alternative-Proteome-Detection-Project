@@ -15,7 +15,7 @@ Raw sequencing data files can be found in the National Institutes of Health (NIH
 
 Mass spectrometry raw files, Proteome Discoverer PSM result files, and Tomahto result files have been deposited to the ProteomeXchange Consortium via the [PRIDE archive](https://www.ebi.ac.uk/pride/archive) using accessions PXD050904 and PXD050909. Data will become available upon publication of the manuscript in JASMS. <br />
 
-Analysis of the mass spectrometry data was conducted using custom R scripts. Associated scripts and supporting files can be found in [`/MassSpectrometryAnalysis`](). 
+Analysis of the mass spectrometry data was conducted using custom R scripts. Associated scripts and supporting files can be found in [`/MassSpectrometryAnalysis`](https://github.com/sheynkman-lab/Alternative-Proteome-Detection-Project/tree/93ee40266c1a9dc28cb5e744c9609c4c66c8e4ce/MassSpectrometryAnalysis). 
 
 ## Statistical Software
 The R script used to create area-proportional Venn diagrams comparing the DDA and Tomahto results can be found in [`/scripts/DDA_vs_Tomahto.Rmd`](https://github.com/sheynkman-lab/Alternative-Proteome-Detection-Project/blob/main/scripts/DDA_vs_Tomahto.Rmd).
