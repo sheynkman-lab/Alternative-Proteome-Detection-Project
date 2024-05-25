@@ -1,0 +1,1539 @@
+---
+title: "10_HUVEC and BSA Complex Analysis"
+author: "Jennifer Korchak"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Availability
+
+**Raw data files, Proteome Discoverer PSM files, Tomahto Results files must be downloaded from the [PRIDE archive](https://www.ebi.ac.uk/pride/archive) using accessions PXD050904 and PXD050909.**
+
+**Skyline reports for shTMTpro and TMTpro labeled peptides must be generated from the .raw files based on the settings described in the Methods section of the manuscript [IS-PRM-based peptide targeting informed by long-read sequencing for alternative proteome detection](https://doi.org/10.1101/2024.04.01.587549).** 
+
+File paths in the *Read in Files* section will need to be changed accordingly.
+
+# Setting up the Workspace
+
+## Load packages
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(stringr)
+library(ggtree)
+library(eulerr)
+library(gridExtra)
+library(ggpubr)
+
+subset(data.frame(sessioninfo::package_info()), attached==TRUE, c(package, loadedversion))
+```
+
+## Read in Files
+
+```{r, message=FALSE}
+# Set experiment name for automatic file production (date will be automatically included)
+R_experiment_name <- "R_HUVEC_BSA_complex" 
+
+#Read in BSA peptide files
+bsa <- read_table("BSA.txt", col_names = FALSE) %>% 
+  pull()
+bsa_id <- read_table("BSA.txt", col_names = FALSE) %>% 
+  rename(peptide = X1) %>% 
+  mutate(id = paste("BSA", row_number(), sep = "_"))
+
+#####################################Tomahto Result##########################################
+
+tom_result_1e6 <- read_csv("230523_AC9_0,1amolTMTpro127BSA_wTrigandHUVEC_Tomahto90min_Result.csv")
+tom_result_1e5 <- read_csv("230523_AC9_1amolTMTpro127BSA_wTrigandHUVEC_Tomahto90min_Result.csv")
+tom_result_1e4 <- read_csv("230523_AC9_10amolTMTpro127BSA_wTrigandHUVEC_Tomahto90min_Result.csv")
+tom_result_1e3 <- read_csv("230523_AC9_100amolTMTpro127BSA_wTrigandHUVEC_Tomahto90min_Result.csv")
+
+
+####################################DDA PSMs###########################################
+
+dda_1e6 <- read_csv("230523_AC9_0,1amolTMTpro127BSA_wTrigandHUVEC_HCDorb90min_PSM.csv")
+dda_1e5 <- read_csv("230523_AC9_1amolTMTpro127BSA_wTrigandHUVEC_HCDorb90min_PSM.csv")
+dda_1e4 <- read_csv("230523_AC9_10amolTMTpro127BSA_wTrigandHUVEC_HCDorb90min_PSM.csv")
+dda_1e3 <- read_csv("230523_AC9_100amolTMTpro127BSA_wTrigandHUVEC_HCDorb90min_PSM.csv")
+
+########################################DDA TMT Skyline#########################################
+
+dda_tmt_1e6 <- read_csv("BSA_0,1amol_HUVEC_MS1_MS2_DDA_TMTpro_SkylineReport.csv")
+dda_tmt_1e5 <- read_csv("BSA_1amol_HUVEC_MS1_MS2_DDA_TMTpro_SkylineReport.csv")
+dda_tmt_1e4 <- read_csv("BSA_10amol_HUVEC_MS1_MS2_DDA_TMTpro_SkylineReport.csv")
+dda_tmt_1e3 <- read_csv("BSA_100amol_HUVEC_MS1_MS2_DDA_TMTpro_SkylineReport.csv")
+
+########################################DDA shTMT Skyline#######################################
+
+dda_sh_1e6 <- read_csv("BSA_0,1amol_HUVEC_MS1_MS2_DDA_shTMTpro_SkylineReport.csv")
+dda_sh_1e5 <- read_csv("BSA_1amol_HUVEC_MS1_MS2_DDA_shTMTpro_SkylineReport.csv")
+dda_sh_1e4 <- read_csv("BSA_10amol_HUVEC_MS1_MS2_DDA_shTMTpro_SkylineReport.csv")
+dda_sh_1e3 <- read_csv("BSA_100amol_HUVEC_MS1_MS2_DDA_shTMTpro_SkylineReport.csv")
+
+########################################Tomahto TMT Skyline###################################
+
+tom_tmt_1e6 <- read_csv("BSA_0,1amolTarget_HUVEC_MS1_MS2_Tomahto_TMTpro_SkylineReport.csv")
+tom_tmt_1e5 <- read_csv("BSA_1amolTarget_HUVEC_MS1_MS2_Tomahto_TMTpro_SkylineReport.csv")
+tom_tmt_1e4 <- read_csv("BSA_10amolTarget_HUVEC_MS1_MS2_Tomahto_TMTpro_SkylineReport.csv")
+tom_tmt_1e3 <- read_csv("BSA_100amolTarget_HUVEC_MS1_MS2_Tomahto_TMTpro_SkylineReport.csv")
+
+########################################Tomahto shTMT Skyline#################################
+
+tom_sh_1e6 <- read_csv("BSA_0,1amolTarget_HUVEC_MS1_MS2_Tomahto_shTMTpro_SkylineReport.csv")
+tom_sh_1e5 <- read_csv("BSA_1amolTarget_HUVEC_MS1_MS2_Tomahto_shTMTpro_SkylineReport.csv")
+tom_sh_1e4 <- read_csv("BSA_10amolTarget_HUVEC_MS1_MS2_Tomahto_shTMTpro_SkylineReport.csv")
+tom_sh_1e3 <- read_csv("BSA_100amolTarget_HUVEC_MS1_MS2_Tomahto_shTMTpro_SkylineReport.csv")
+
+###############################add source to each file################################
+dataframes <- ls(pattern = "_1e[3-6]")
+
+# Add a 'exp' column to each dataframe
+for (df_name in dataframes) {
+  df <- get(df_name) 
+  df$exp <- paste0(df_name)
+  assign(df_name, df, envir = .GlobalEnv)
+}
+
+###################################Combine files################################
+#Results files for DDA and Tomahto
+dda <- bind_rows(dda_1e3, dda_1e4, dda_1e5, dda_1e6) %>% 
+  mutate(Peptide = Sequence) #for ease of comparison
+
+tom <- bind_rows(tom_result_1e3, tom_result_1e4, tom_result_1e5, tom_result_1e6)
+
+#Skyline Reports for DDA and Tomahto for shTMT (triggers) and TMTpro (targets)
+dda_sh <- bind_rows(dda_sh_1e3, dda_sh_1e4, dda_sh_1e5, dda_sh_1e5, dda_sh_1e6) 
+
+dda_tmt <- bind_rows(dda_tmt_1e3, dda_tmt_1e4, dda_tmt_1e5, dda_tmt_1e6)
+
+tom_sh <- bind_rows(tom_sh_1e3, tom_sh_1e4, tom_sh_1e5, tom_sh_1e6)
+
+tom_tmt <- bind_rows(tom_tmt_1e3, tom_tmt_1e4, tom_tmt_1e5, tom_tmt_1e6)
+
+rm(dda_1e3, dda_1e4, dda_1e5, dda_1e6, 
+   tom_result_1e3, tom_result_1e4, tom_result_1e5, tom_result_1e6,
+   dda_sh_1e3, dda_sh_1e4, dda_sh_1e5, dda_sh_1e6,
+   dda_tmt_1e3, dda_tmt_1e4, dda_tmt_1e5, dda_tmt_1e6,
+   tom_sh_1e3, tom_sh_1e4, tom_sh_1e5, tom_sh_1e6,
+   tom_tmt_1e3, tom_tmt_1e4, tom_tmt_1e5, tom_tmt_1e6)
+
+##Jurkat BSA For Comparison #############
+
+jurkat <- read_csv("240304_Jurkat_complex_combined_for_fig.csv")
+
+```
+
+## Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- list(dda = dda, tom = tom, dda_sh = dda_sh, dda_tmt = dda_tmt, tom_sh = tom_sh, tom_tmt = tom_tmt)
+
+# Create function for summarizing dataframes- Distinct Peptide Number and Number of Rows
+summarize_dataframe <- function(df_name, df) {
+  result <- tibble(
+    DataFrame = df_name,
+    Rows = nrow(df),
+    Distinct_Peptides = n_distinct(df$Peptide), 
+    BSA_Peptides = df %>%
+      filter(Peptide %in% bsa) %>%
+      distinct(Peptide) %>%
+      nrow()
+  )
+  return(result)
+}
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_1 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_1 <- bind_rows(summary_table_1)
+
+# Print the summary table
+print(summary_df_1)
+```
+
+# Tomahto Data Analysis
+
+## Look at Tomahto Files
+
+```{r}
+#visualizing the quant channels
+
+columns_to_plot <- paste0("Quant ", 1:18)
+
+# Subsetting the columns
+subset_data <- tom[, columns_to_plot]
+
+# Creating a boxplot to visualize the signal in the quant channels
+boxplot(log10(subset_data +1), col = "lightblue", main = "Boxplot of Quant Columns Taken to log10")
+boxplot(subset_data, col = "lightblue", main = "Boxplot of Quant Columns")
+```
+
+## Adding Column for Target/ Trigger Ratio for Tomahto Files
+
+Metrics for each analysis can be found in the output “_results.csv” files.
+  ratio of target fragment ions observed over trigger fragment ions observed is at least 50%  
+  allow for cases with 40% fragment ion coverage and 100% isospec purity 
+  isospec purity at least 65% 
+
+```{r}
+tom <- tom %>% 
+  mutate(target_trigger_ratio = `Target Peaks`/`Trigger Peaks`)
+```
+
+## Filter targets for metrics
+
+```{r}
+filtered_tom <- tom %>%
+  filter((target_trigger_ratio >= 0.5 & `Iso Spec` >= 0.65) | (target_trigger_ratio >= 0.4 & `Iso Spec` == 1))
+
+filtered_tom <- filtered_tom %>%
+  group_by(Peptide, z) %>%
+  mutate(tomahto_detection_count = n()) %>% 
+  ungroup() %>% 
+  mutate(exp_match = paste0(str_remove(exp, "result_")))
+
+filtered_tom %>% 
+  distinct(Peptide)
+```
+
+### Sanity Check 1! What is the difference between tom and filtered_tom? 
+
+```{r}
+check_1 <- anti_join(tom, filtered_tom, by = "MS2 Scan#")
+check_1 %>% 
+  select(Peptide, z, `Iso Spec`, target_trigger_ratio)
+
+#these peptides did not meet the Tomahto filtering criteria and thus were successfully filtered out
+```
+
+## If MS2 Scan# in the Tomahto results file "filtered_tom" is present in the Skyline report "tom_sh" column "Raw Spectrum Ids", pull those rows 
+
+```{r}
+tom_sh <- tom_sh %>% 
+  mutate(exp_match = paste0(str_remove(exp, "sh_")))
+
+#clean up the scan numbers in the tom_sh files
+tom_sh$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", tom_sh$`Raw Spectrum Ids`)
+tom_sh$`Raw Spectrum Ids` <- gsub(",0,", "", tom_sh$`Raw Spectrum Ids`)
+
+matched_tom_skyline_sh <- inner_join(filtered_tom, tom_sh, join_by("Peptide" == "Peptide", "z" == "Precursor Charge", "exp_match" == "exp_match"), relationship = "many-to-many")
+```
+
+## If MS2 Scan# in the Tomahto results file "filtered_tom" is present in the Skyline report "tom_tmt" column "Raw Spectrum Ids", pull those rows 
+
+```{r}
+tom_tmt <- tom_tmt %>% 
+  mutate(exp_match = paste0(str_remove(exp, "tmt_")))
+
+#clean up the scan numbers in the tom_tmt files
+tom_tmt$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", tom_tmt$`Raw Spectrum Ids`)
+tom_tmt$`Raw Spectrum Ids` <- gsub(",0,", "", tom_tmt$`Raw Spectrum Ids`)
+
+matched_tom_skyline_tmt <- inner_join(filtered_tom, tom_tmt, join_by("Peptide" == "Peptide", "z" == "Precursor Charge", "exp_match" == "exp_match"), relationship = "many-to-many") %>% 
+  filter(str_detect(`Raw Spectrum Ids`, as.character(`MS2 Scan#`)))
+```
+
+### Sanity Check 2! Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- c(list_of_dataframes, list(filtered_tom = filtered_tom, matched_tom_skyline_sh = matched_tom_skyline_sh, matched_tom_skyline_tmt = matched_tom_skyline_tmt))
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_2 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_2 <- bind_rows(summary_table_2)
+
+# Print the summary table
+print(summary_df_2)
+```
+
+## Adding a column to the Skyline files with summed raw intensities
+
+```{r}
+# Define a function to sum numbers in a comma-separated string
+sum_numbers <- function(x) {
+  numbers <- as.numeric(strsplit(x, ",")[[1]])
+  sum(numbers, na.rm = TRUE)
+}
+
+# Mutate a new column in the Skyline TMTpro with the sum of numbers + count scan numbers
+matched_tom_skyline_tmt <- matched_tom_skyline_tmt %>%
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(`Retention Time` = as.numeric(`Retention Time`)) %>%
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1)
+
+# Mutate a new column in the Skyline shTMTpro with the sum of numbers + count scan numbers
+matched_tom_skyline_sh <- matched_tom_skyline_sh %>%
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1)
+
+#check the output
+matched_tom_skyline_tmt %>% 
+  select(Peptide, target_trigger_ratio, `Iso Spec`, `MS2 Scan#`, Sum_Raw_Intensities, scan_count, `Total Area MS1`, `Total Area`) %>% 
+  sample_n(10)
+```
+
+## In matched_tom_skyline_tmt, pull rows that have the highest target_trigger_ratio, Iso Spec, and Sum_Raw_Intensities where Peptide and z are distinct
+
+```{r, warning=FALSE}
+filtered_distinct_tom_tmt <- matched_tom_skyline_tmt %>%
+  group_by(Peptide, z, exp.x) %>%
+  arrange(desc(target_trigger_ratio), desc(`Target Peaks`), desc(`Iso Spec`), desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+
+filtered_distinct_tom_sh <- matched_tom_skyline_sh %>%
+  group_by(Peptide, z, exp.x) %>%
+  arrange(desc(target_trigger_ratio), desc(`Target Peaks`), desc(`Iso Spec`), desc(`Total Area MS1`)) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+
+### Sanity Check 3! Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- c(list_of_dataframes, list(filtered_distinct_tom_sh = filtered_distinct_tom_sh, filtered_distinct_tom_tmt = filtered_distinct_tom_tmt))
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_3 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_3 <- bind_rows(summary_table_3)
+
+# Print the summary table
+print(summary_df_3)
+```
+
+### Sanity Check 4! What is the difference between filtered_tom and filtered_distinct_tom_tmt?
+target_trigger_ratio >= 0.5 & Iso Spec >= 0.65) | (target_trigger_ratio >= 0.4 & Iso Spec == 1)
+
+```{r}
+subset_tom <- filtered_tom %>% 
+ select(Peptide, z, `Iso Spec`, target_trigger_ratio, `MS2 Scan#`, exp)
+
+subset_tom_tmt <- filtered_distinct_tom_tmt %>% 
+ select(Peptide, z, `Iso Spec`, target_trigger_ratio, `MS2 Scan#`, exp.x) %>% 
+  rename(exp = exp.x)
+
+check_2_dif <- setdiff(subset_tom, subset_tom_tmt)
+
+check_2_same <- semi_join(subset_tom, subset_tom_tmt)
+
+check_2_dif
+check_2_same
+
+## The peptide entries that are the same are the 'best' based on the metrics of target_trigger_ratio, followed by `Iso Spec`
+```
+
+## Save the filtered_distinct_tom_tmt as a csv
+
+```{r}
+# Get today's date in the format YYMMDD
+current_date <- format(Sys.Date(), "%y%m%d")
+
+# Create the new file name
+new_file_name_1 <- paste(current_date, R_experiment_name, "SKYLINE_TOM_OUTPUT.csv", sep = "_")
+
+filtered_distinct_tom_tmt_export <- filtered_distinct_tom_tmt %>% 
+  select(!`Raw Spectrum Ids`) %>% 
+  select(!`Raw Intensities`)
+
+# Check if the dataframe has any rows
+if (nrow(filtered_distinct_tom_tmt_export) > 0) {
+  # Write to CSV if there are rows
+  write.csv(filtered_distinct_tom_tmt_export, file = new_file_name_1, row.names = FALSE)
+  cat("CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV.\n")
+}
+```
+
+# WORK ON THIS
+## Visualize the Target Peptides from Tomahto Data with Coupled Skyline Info!
+
+```{r}
+#Filter for only one charge state
+
+tom_tmt_for_fig <- filtered_distinct_tom_tmt %>% 
+  group_by(Peptide, exp.x) %>% 
+  arrange(desc(as.numeric(`Total Area MS1`))) %>% 
+  slice(1) %>%
+  ungroup()
+
+tom_tmt_for_fig %>% 
+  mutate("Total Area Fragment" = as.numeric(`Total Area`) - as.numeric(`Total Area MS1`)) %>%
+  select("Peptide","Total Area MS1", "Total Area", "Total Area Fragment", exp.x)
+
+tom_tmt_for_fig[, c("Total Area MS1", "Total Area", "Sum_Raw_Intensities")] <- 
+  lapply(tom_tmt_for_fig[, c("Total Area MS1", "Total Area", "Sum_Raw_Intensities")], as.numeric)
+
+# Reshape the data from wide to long format
+long_data <- tidyr::gather(tom_tmt_for_fig, key = "Variable", value = "Value", 
+                           c("Total Area MS1", "Total Area", "Sum_Raw_Intensities"))
+
+# Create the bar graph using ggplot to look at the data
+ggplot(long_data, aes(x = Peptide, y = log2(Value+1), fill = exp.x)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Bar Graph for Peptide Intensity",
+       x = "Peptide", y = "Log2 Intensity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Making the appropriate columns numeric
+tom_tmt_for_fig[, c("Total Area MS1", "Total Area")] <- 
+  lapply(tom_tmt_for_fig[, c("Total Area MS1", "Total Area")], as.numeric)
+
+# Create a Log2 Clustered Dot Plot
+ggplot(tom_tmt_for_fig, aes(x = Peptide, y = log2(`Total Area MS1`+1), color = exp.x)) +
+  geom_point(position = position_dodge(width = 0.6)) +
+  labs(title = "Log2 Scaled Clustered Dot Plot for Sum Raw Intensities vs Total Area",
+       x = "Peptide", y = "Log2 Scaled Total Area MS1") +
+  scale_y_continuous(limits = c(0, max(log2(tom_tmt_for_fig$`Total Area MS1` + 1), na.rm = TRUE) + 0.5)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Create a Clustered Dot Plot
+ggplot(tom_tmt_for_fig, aes(x = Peptide, y = `Sum_Raw_Intensities`, color =`Total Area`, size = `Total Area MS1`)) +
+  geom_point(position = position_dodge(width = 0.6)) +
+  labs(title = "Clustered Dot Plot for Sum Raw Intensities vs Total Area",
+       x = "Peptide", y = "Total Area MS1") +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+# DDA Data Analysis
+
+## Look at DDA Files
+
+```{r}
+#as reminders...
+print(colnames(dda))
+print(summary_df_1)
+
+#visualize the data
+dda %>%
+  filter(Sequence %in% bsa) %>%
+  group_by(Peptide) %>%
+  top_n(1, wt = Intensity) %>%
+  arrange(Intensity) %>%
+  ggplot(aes(x = Intensity, y = reorder(Sequence, Intensity))) +
+  geom_col(fill = "skyblue", width = 0.7) +
+  labs(title = "Bar Plot of BSA Trigger Peptide Intensity from DDA",
+       x = "Intensity (from PD)", y = "Sequence") +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 6))
+
+#log scaled
+dda %>%
+  filter(Sequence %in% bsa) %>%
+  group_by(Peptide) %>%
+  top_n(1, wt = Intensity) %>%
+  mutate(log_Intensity = log2(Intensity +1)) %>% 
+  arrange(log_Intensity) %>%
+  ggplot(aes(x = log2(Intensity +1), y = reorder(Sequence, log_Intensity))) +
+  geom_col(fill = "skyblue", width = 0.7) +
+  labs(title = "Bar Plot of Log Scaled BSA Trigger Peptide Intensity",
+       x = "log2 Intensity (from PD)", y = "Sequence") +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 6))
+```
+
+
+## Filter the DDA data by AS192 Peptides and Other Metrics
+
+*Metrics*
+Percolator PEP Score of </= 0.01
+Split into shTMTpro labeled and TMTpro labeled AS192 peptides
+
+### DDA shTMTpro-labeled Triggers 
+
+```{r}
+dda_filtered_sh <- dda %>% 
+  filter(Sequence %in% bsa) %>%
+  filter(str_detect(Modifications, "shTMTpro")) %>% 
+  filter(`Percolator_PEP` <= 0.01)
+
+dda_filtered_sh <- dda_filtered_sh %>%
+  group_by(Sequence, Charge, exp) %>%
+  mutate(DDA_detection_count = n()) %>% 
+  ungroup() %>% 
+  mutate(exp_match = paste0(exp))
+  
+dda_filtered_sh_distinct <- dda_filtered_sh %>% 
+  group_by(Sequence, Charge, exp) %>%
+  top_n(1, wt = Intensity) %>% 
+  ungroup()
+```
+
+### Sanity Check 5! What is the difference between dda, dda_filtered_sh, and dda_filtered_sh_distinct?
+
+Ensuring that the PSMs filtered out do not meet the conditions of PEP Score <0.01 and Isolation Interference < 35%
+
+```{r}
+check_3 <- anti_join(dda, dda_filtered_sh, by = "First_Scan")
+check_3 %>% 
+  select(Sequence, Charge, `Isolation_Interference_in_Percent`, `Percolator_PEP`)
+
+check_4 <- anti_join(dda_filtered_sh, dda_filtered_sh_distinct, by = "First_Scan")
+check_4 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count)
+
+dda_filtered_sh %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count)
+
+dda_filtered_sh_distinct %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count)
+```
+
+### DDA TMTpro-labeled Targets
+
+```{r}
+dda_filtered_tmt <- dda %>% 
+  filter(Sequence %in% bsa) %>%
+  filter(!str_detect(Modifications, "shTMTpro")) %>% 
+  filter(str_detect(Modifications, "TMTpro")) %>% 
+  filter(`Percolator_PEP` <= 0.01)
+
+dda %>% 
+  filter(Sequence %in% bsa) %>%
+  filter(!str_detect(Modifications, "shTMTpro")) %>% 
+  filter(str_detect(Modifications, "TMTpro")) %>% 
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", exp)
+
+dda_filtered_tmt <- dda_filtered_tmt %>%
+  group_by(Sequence, Charge, exp) %>%
+  mutate(DDA_detection_count = n()) %>% 
+  ungroup() %>% 
+  mutate(exp_match = paste0(exp))
+
+dda_filtered_tmt_distinct <- dda_filtered_tmt %>% 
+  group_by(Sequence, Charge, exp) %>%
+  top_n(1, wt = Intensity) %>% 
+  ungroup()
+```
+
+### Sanity Check 6! What is the difference between dda, dda_filtered_tmt, and dda_filtered_tmt_distinct?
+
+Ensuring that the PSMs filtered out do not meet the conditions of PEP Score <0.01
+
+```{r}
+check_5 <- anti_join(dda, dda_filtered_tmt, by = "First_Scan")
+check_5 %>% 
+  select(Sequence, Charge, "Isolation_Interference_in_Percent", "Percolator_PEP", exp)
+
+check_6 <- anti_join(dda_filtered_tmt, dda_filtered_tmt_distinct, by = "First_Scan")
+check_6 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count, exp)
+
+dda_filtered_tmt %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count, exp)
+
+dda_filtered_tmt_distinct %>% 
+  arrange(Peptide) %>%
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count, exp)
+```
+
+## Save dda_filtered_sh_distinct and dda_filtered_tmt_distinct as .csv's
+
+```{r}
+# Get today's date in the format YYMMDD
+current_date <- format(Sys.Date(), "%y%m%d")
+
+# Create the new file name
+new_file_name_3 <- paste(current_date, R_experiment_name, "DDA_SH_FILT_OUTPUT.csv", sep = "_")
+
+# Check if the dataframe has any rows
+if (nrow(dda_filtered_sh_distinct) > 0) {
+  # Write to CSV if there are rows
+  write.csv(dda_filtered_sh_distinct, file = new_file_name_3, row.names = FALSE)
+  cat("dda_filtered_sh_distinct CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for dda_filtered_sh_distinct.\n")
+}
+
+# Create the new file name
+new_file_name_4 <- paste(current_date, R_experiment_name, "DDA_TMT_FILT_OUTPUT.csv", sep = "_")
+
+# Check if the dataframe has any rows
+if (nrow(dda_filtered_tmt_distinct) > 0) {
+  # Write to CSV if there are rows
+  write.csv(dda_filtered_sh_distinct, file = new_file_name_4, row.names = FALSE)
+  cat("dda_filtered_tmt_distinct CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for dda_filtered_tmt_distinct.\n")
+}
+```
+
+## If Master_Scans in the PD PSM file "dda_filtered_sh" is present in the Skyline report "dda_sh" column "Raw Spectrum Ids", pull those rows 
+
+Master Scans in PD = the precursor scan number(s) 
+
+```{r}
+dda_sh <- dda_sh %>% 
+  mutate(exp_match = paste0(str_remove(exp, "sh_")))
+
+#clean up the scan numbers in the dda_sh files
+dda_sh$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", dda_sh$`Raw Spectrum Ids`)
+dda_sh$`Raw Spectrum Ids` <- gsub(",0,", "", dda_sh$`Raw Spectrum Ids`)
+
+matched_dda_skyline_sh <- inner_join(dda_filtered_sh, dda_sh, join_by("Sequence" == "Peptide", "Charge" == "Precursor Charge", "exp_match" == "exp_match"), relationship = "many-to-many") %>% 
+  filter(str_detect(`Raw Spectrum Ids`, as.character(`Master_Scans`))) %>% 
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1) %>% 
+  ungroup()
+
+matched_dda_skyline_sh_distinct <- matched_dda_skyline_sh %>% 
+  group_by(Charge, Sequence, exp.x) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+```
+
+### Sanity Check 7! What is the difference between matched_dda_skyline_sh_distinct and dda_filtered_sh_distinct?
+
+```{r}
+anti_join(dda_filtered_sh_distinct, matched_dda_skyline_sh_distinct, join_by(Peptide, Charge))
+#same peptides
+
+check_7 <- anti_join(dda_filtered_sh_distinct, matched_dda_skyline_sh_distinct, by = "Master_Scans")
+check_7 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count, "First_Scan", "Master_Scans", exp)
+
+check_8 <- anti_join(matched_dda_skyline_sh_distinct, dda_filtered_sh_distinct, by = "Master_Scans")
+check_8 %>% 
+  arrange(Peptide) %>% 
+  select(Sequence, Charge, Intensity, "Isolation_Interference_in_Percent", "Percolator_PEP", DDA_detection_count, "First_Scan", "Master_Scans", exp.x)
+```
+
+## If Master_Scans in the PD PSM file "dda_filtered_tmt" is present in the Skyline report "dda_tmt" column "Raw Spectrum Ids", pull those rows 
+
+```{r}
+dda_tmt <- dda_tmt %>% 
+  mutate(exp_match = paste0(str_remove(exp, "tmt_")))
+
+#clean up the scan numbers in the dda_sh files
+dda_tmt$`Raw Spectrum Ids` <- gsub("0\\.1\\.", "", dda_tmt$`Raw Spectrum Ids`)
+dda_tmt$`Raw Spectrum Ids` <- gsub(",0,", "", dda_tmt$`Raw Spectrum Ids`)
+
+matched_dda_skyline_tmt <- inner_join(dda_filtered_tmt, dda_tmt, join_by("Sequence" == "Peptide", "Charge" == "Precursor Charge", "exp_match" == "exp_match"), relationship = "many-to-many") %>% 
+  filter(str_detect(`Raw Spectrum Ids`, as.character(`Master_Scans`))) %>% 
+  mutate(Sum_Raw_Intensities = sapply(`Raw Intensities`, sum_numbers)) %>% 
+  mutate(scan_count = str_count(`Raw Spectrum Ids`, ",") + 1) %>% 
+  ungroup()
+
+matched_dda_skyline_tmt_distinct <- matched_dda_skyline_tmt %>% 
+  group_by(Charge, Sequence, exp.x) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup()
+```
+
+### Sanity Check 8! Summarize Files
+
+```{r}
+# Sample list of data frames
+list_of_dataframes <- c(list_of_dataframes, list(dda_filtered_sh= dda_filtered_sh, matched_dda_skyline_sh = matched_dda_skyline_sh, matched_dda_skyline_tmt = matched_dda_skyline_tmt))
+
+# Apply the summarize_dataframe function to each data frame in the list
+summary_table_4 <- lapply(names(list_of_dataframes), function(name) {
+  summarize_dataframe(name, list_of_dataframes[[name]])
+})
+
+# Convert the list of summaries into a data frame
+summary_df_4 <- bind_rows(summary_table_4)
+
+# Print the summary table
+print(summary_df_4)
+```
+
+## Save matched_dda_skyline_sh and matched_dda_skyline_tmt as .csv's
+
+```{r}
+# Get today's date in the format YYMMDD
+current_date <- format(Sys.Date(), "%y%m%d")
+
+# Create the new file name
+new_file_name_5 <- paste(current_date, R_experiment_name, "SKYLINE_DDA_SH_OUTPUT.csv", sep = "_")
+
+matched_dda_skyline_sh_export <- matched_dda_skyline_sh %>% 
+  select(!`Raw Spectrum Ids`) %>% 
+  select(!`Raw Intensities`)
+
+# Check if the dataframe has any rows
+if (nrow(matched_dda_skyline_sh_export) > 0) {
+  # Write to CSV if there are rows
+  write.csv(matched_dda_skyline_sh_export, file = new_file_name_5, row.names = FALSE)
+  cat("matched_dda_skyline_sh CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for matched_dda_skyline_sh.\n")
+}
+
+# Create the new file name
+new_file_name_6 <- paste(current_date, R_experiment_name, "SKYLINE_DDA_TMT_OUTPUT.csv", sep = "_")
+
+matched_dda_skyline_tmt_export <- matched_dda_skyline_tmt %>% 
+  select(!`Raw Spectrum Ids`) %>% 
+  select(!`Raw Intensities`)
+
+# Check if the dataframe has any rows
+if (nrow(matched_dda_skyline_tmt_export) > 0) {
+  # Write to CSV if there are rows
+  write.csv(matched_dda_skyline_tmt_export, file = new_file_name_6, row.names = FALSE)
+  cat("matched_dda_skyline_tmt CSV file written successfully.\n")
+} else {
+  # Print a message if there are no rows
+  cat("No data to write to CSV for matched_dda_skyline_tmt.\n")
+}
+```
+
+## Visualize DDA + Tomahto Data
+
+### Generating dataframe for figures
+
+```{r}
+## make matched_dda_skyline_tmt_distinct and filtered_distinct_tom_tmt compatible to be joined
+
+dda_for_fig <- matched_dda_skyline_tmt_distinct %>% 
+  group_by(Peptide, exp.x) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  select(Peptide, DDA_detection_count, `Charge`, `Total Area MS1`, `Total Area`, exp.x) %>% 
+  rename(num_detected = DDA_detection_count, charge = Charge) %>% 
+  mutate(source = "DDA",
+      target_dilution_amol = case_when(
+      grepl("_1e3", exp.x) ~ 100,
+      grepl("_1e4", exp.x) ~ 10,
+      grepl("_1e5", exp.x) ~ 1,
+      grepl("_1e6", exp.x) ~ 0.1,
+      TRUE ~ NA_real_))
+
+tom_for_fig <- filtered_distinct_tom_tmt %>% 
+  group_by(Peptide, exp.x) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  select(Peptide, tomahto_detection_count, z, `Total Area MS1`,`Total Area`, exp.x) %>% 
+  rename(num_detected = tomahto_detection_count, charge = z) %>% 
+  mutate(source = "Tomahto",
+      target_dilution_amol = case_when(
+      grepl("_1e3", exp.x) ~ 100,
+      grepl("_1e4", exp.x) ~ 10,
+      grepl("_1e5", exp.x) ~ 1,
+      grepl("_1e6", exp.x) ~ 0.1,
+      TRUE ~ NA_real_))
+
+combined_for_fig <- bind_rows(dda_for_fig, tom_for_fig) %>% 
+  rename(total_area_MS1 = "Total Area MS1", total_area_MS2 = "Total Area")
+
+combined_for_fig <- left_join(combined_for_fig, bsa_id, join_by(Peptide == peptide))
+
+combined_for_fig <- combined_for_fig %>% 
+  mutate(source_dilution = paste(source, target_dilution_amol, sep= ": ")) %>%
+  select(Peptide, charge, num_detected, total_area_MS1, total_area_MS2, source, target_dilution_amol, source_dilution, id) %>% 
+    group_by(Peptide, source) %>% 
+  mutate(is_lowest_dilution = target_dilution_amol == min(target_dilution_amol)) %>% 
+  ungroup() %>% 
+  group_by(Peptide, source) %>%
+  mutate(total_times_detected = n()) %>%
+  ungroup()
+
+combined_for_fig$total_area_MS1 <- as.numeric(combined_for_fig$total_area_MS1)
+combined_for_fig$total_area_MS2 <- as.numeric(combined_for_fig$total_area_MS2)
+
+custom_palette <- c(
+  "DDA: 0.1"  = "#90d1ee",
+  "DDA: 1"    = "#73c8ef",
+  "DDA: 10"   = "#51bff0",
+  "DDA: 100"  = "#13b6f1",
+  "DDA" = "#13b6f1",
+  "Tomahto: 0.1"  = "#f294b5",
+  "Tomahto: 1"    = "#f279a2",
+  "Tomahto: 10"   = "#f15b8e",
+  "Tomahto: 100"  = "#ef3478",
+  "Tomahto" = "#ef3478",
+  "Tomahto CID" = "#ef3478",
+  "Tomahto HCD" = "#f15b8e")
+```
+
+### Visualizing BSA detection repeatability
+
+```{r}
+##########BSA DETECTION IN DDA vs TOMAHTO- REPEATABILITY##############################
+
+##################full peptide information############################################
+plot_bsa_repeatability_peps <- combined_for_fig %>%
+  group_by(Peptide, source) %>%
+  filter(is_lowest_dilution = TRUE) %>% 
+  ggplot(aes(x = source, y = reorder(Peptide, desc(total_times_detected)), color = source_dilution)) +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability of Tomahto: BSA Tryptic Peptides", width = 60),
+    x = "Replicate", y = "Peptide", color = "Dilution (amol)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot(plot_bsa_repeatability_peps)
+
+#####peptide information + faceted by target dilution amol as well#####################
+plot_bsa_repeatability_peps_dilution <- combined_for_fig %>%
+  group_by(Peptide, source_dilution) %>%
+  ggplot(aes(x = source, y = reorder(Peptide, desc(total_times_detected)), color = source_dilution)) +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: BSA Tryptic Peptides", width = 60),
+    x = "Replicate", y = "Peptide", color = "Dilution (amol)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_bsa_repeatability_peps_dilution
+
+#####peptide information + faceted by target dilution amol as well + color = source#####################
+plot_bsa_rep_peps_dil_grid <- combined_for_fig %>%
+  group_by(Peptide, source_dilution) %>%
+  ggplot(aes(x = source, y = reorder(Peptide, desc(total_times_detected)), color = source_dilution)) +
+    facet_grid(rows = vars(source),
+             cols = vars(target_dilution_amol),
+             space = "free_y", scales = "fixed") +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: BSA Tryptic Peptides", width = 60),
+    x = "Replicate", y = "Peptide", color = "Source"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_bsa_rep_peps_dil_grid
+
+#####peptide IDs+ faceted by target dilution amol as well + color = source#####################
+plot_bsa_ID_rep_peps_dil_grid <- combined_for_fig %>%
+  group_by(Peptide, source_dilution) %>%
+  ggplot(aes(x = source, y = reorder(id, desc(total_times_detected)), color = source)) +
+    facet_grid(rows = vars(source),
+             cols = vars(target_dilution_amol),
+             space = "free_y", scales = "fixed") +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: BSA Tryptic Peptides", width = 60),
+    x = "Replicate", y = "Peptide ID", color = "Source"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_bsa_ID_rep_peps_dil_grid
+
+#peptide IDs+ faceted by target dilution amol + MS1 intensity #################
+plot_bsa_ID_rep_peps_dil_grid_MS1 <- combined_for_fig %>%
+  group_by(Peptide, source_dilution) %>%
+  ggplot(aes(x = source, y = reorder(id, desc(total_times_detected)), color = source, size = total_area_MS1)) +
+    facet_grid(rows = vars(source),
+             cols = vars(target_dilution_amol),
+             space = "free_y", scales = "fixed") +
+  geom_point() +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: BSA Tryptic Peptides", width = 60),
+    x = "Replicate", y = "Peptide ID", color = "Source", size = "Total MS1 Intensity"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_bsa_ID_rep_peps_dil_grid_MS1
+
+
+#peptide IDs+ faceted by target dilution amol +LOG SCALED MS1 intensity #################
+plot_bsa_ID_rep_peps_dil_grid_logMS1 <- combined_for_fig %>%
+  group_by(Peptide, source_dilution) %>%
+  ggplot(aes(x = source, y = reorder(id, desc(total_times_detected)), color = source, size = log2(total_area_MS1 +1))) +
+    facet_grid(rows = vars(source),
+             cols = vars(target_dilution_amol),
+             space = "free_y", scales = "fixed") +
+  geom_point() +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: BSA Tryptic Peptides", width = 60),
+    x = "Replicate", y = "Peptide ID", color = "Source", size = "Log Scaled Total MS1 Intensity"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_bsa_ID_rep_peps_dil_grid_logMS1
+
+#peptide IDs+ faceted by target dilution amol + MS2 intensity #################
+plot_bsa_ID_rep_peps_dil_grid_MS2 <- combined_for_fig %>%
+  group_by(Peptide, source_dilution) %>%
+  ggplot(aes(x = source, y = reorder(id, desc(total_times_detected)), color = source, size = total_area_MS2)) +
+    facet_grid(rows = vars(source),
+             cols = vars(target_dilution_amol),
+             space = "free_y", scales = "fixed") +
+  geom_point() +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: BSA Tryptic Peptides", width = 60),
+    x = "Replicate", y = "Peptide ID", color = "Source", size = "Total MS2 Intensity"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_bsa_ID_rep_peps_dil_grid_MS2
+
+
+###### only peptide id information + faceted by target dilution amol as well###########
+plot_bsa_repeatability_ids_dilutions <- combined_for_fig %>%
+  group_by(Peptide, source_dilution) %>%
+  filter(is_lowest_dilution = TRUE) %>% 
+  ggplot(aes(x = source, y = reorder(id, desc(total_times_detected)), color = source_dilution)) +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability of Tomahto: BSA Tryptic Peptides", width = 60),
+    x = "Replicate", y = "Peptide ID", color = "Dilution (amol)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_bsa_repeatability_ids_dilutions
+```
+
+### Visualizing BSA detection + Intensity Info
+
+```{r}
+#########BSA DETECTION IN DDA vs TOMAHTO- DETECTION / MS1 INTENSITY##################
+
+#####################full peptide information + MS1 Intensity######################
+plot_bsa_detection_ms1_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  filter(is_lowest_dilution = TRUE) %>% 
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= source, size = total_area_MS1)) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of BSA Peptides", width = 60),
+       x= "Source", y = "Peptide", color = "Source", size= "Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_bsa_detection_ms1_int
+
+#####################full peptide information + LOG MS1 Intensity######################
+plot_bsa_detection_log_ms1_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  filter(is_lowest_dilution = TRUE) %>% 
+ggplot(aes(x= source, y = reorder(Peptide, desc(log2(combined_for_fig$total_area_MS1+1))), color= source, size = log2(total_area_MS1+1))) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS1 +1)))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of BSA Peptides", width = 60),
+       x= "Source", y = "Peptide", color = "Source", size= "Log Scaled Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_bsa_detection_log_ms1_int
+
+#####################full peptide information + NO MS1 Intensity######################
+plot_bsa_detection <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  filter(is_lowest_dilution = TRUE) %>% 
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= source)) +
+  geom_point(size = 5) +
+  scale_color_manual(values = custom_palette) +
+    labs(title = str_wrap("Detection of BSA Peptides", width = 60),
+       x= "Source", y = "Peptide", color = "Source") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_bsa_detection
+
+#####################peptide IDs + MS1 Intensity######################
+plot_bsa_ids_detection_ms1_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  filter(is_lowest_dilution = TRUE) %>% 
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1)), color= source, size = total_area_MS1)) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(combined_for_fig$total_area_MS1))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of BSA Peptides", width = 60),
+       x= "Source", y = "Peptide ID", color = "Source", size= "Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_bsa_ids_detection_ms1_int
+
+#####################peptide IDs + LOG MS1 Intensity######################
+plot_bsa_ids_detection_log_ms1_int <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  filter(is_lowest_dilution = TRUE) %>% 
+ggplot(aes(x= source, y = reorder(id, desc(log2(combined_for_fig$total_area_MS1+1))), color= source, size = log2(total_area_MS1+1))) +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(log2(combined_for_fig$total_area_MS1 +1)))) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of BSA Peptides", width = 60),
+       x= "Source", y = "Peptide ID", color = "Source", size= "Log Scaled Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_bsa_ids_detection_log_ms1_int
+
+#####################peptide IDs + NO MS1 Intensity######################
+plot_bsa_ids_detection <- combined_for_fig %>% 
+  group_by(Peptide, source) %>% 
+  filter(is_lowest_dilution = TRUE) %>% 
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1)), color= source)) +
+  geom_point(size = 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of BSA Peptides", width = 60),
+       x= "Source", y = "Peptide ID", color = "Source") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_bsa_ids_detection
+
+```
+
+
+### Visualizing comparison between Tomahto and DDA: Euler Diagram
+
+```{r}
+###Overall
+
+tom_num_peps <- tom_for_fig %>% 
+  distinct(Peptide) %>% 
+  count() %>% 
+  pull() %>% 
+  as.numeric()
+
+tom_detected_peps <- tom_for_fig %>% 
+  distinct(Peptide) %>% 
+  pull() 
+
+dda_num_peps <- dda_for_fig %>% 
+  distinct(Peptide) %>% 
+  count() %>% 
+  pull() %>% 
+  as.numeric()
+
+dda_detected_peps <- dda_for_fig %>% 
+  distinct(Peptide) %>% 
+  pull()
+
+tom_and_dda_detected_peps <- intersect(tom_detected_peps, dda_detected_peps)
+tom_and_dda_num_peps <- as.numeric(length(unique(tom_and_dda_detected_peps)))
+
+plot_euler_tom_dda <- c("Tomahto" = tom_num_peps, "DDA" = c(dda_num_peps - tom_and_dda_num_peps), "Tomahto&DDA" = tom_and_dda_num_peps)
+fit1 <- euler(plot_euler_tom_dda, shape = "ellipse")
+plot(fit1,
+     quantities = TRUE,
+     fill = c("#ef3478", "#13b6f1"))
+
+```
+
+### Visualizing intensity over BSA dilutions
+
+```{r}
+#########MS1 Intensity of Targets per Peptide across Dilutions##################
+
+combined_for_fig %>% 
+  group_by(Peptide, source_dilution) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  mutate(log10_dilution = log10(target_dilution_amol)) %>% 
+  ggplot(aes(x = log10_dilution, y= total_area_MS1, color = Peptide)) +
+  facet_wrap(~ source) +
+  geom_point() +
+  geom_line(aes(group = Peptide), show.legend = FALSE) +
+    labs(title = str_wrap("BSA Peptides MS1 Intensity Across Dilutions", width = 60),
+       x= "Log Scaled Dilution (amol)", y = "Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+###########Log Scaled MS1 Intensity of Targets Per Peptide Across Dilutions #####################
+combined_for_fig %>% 
+  group_by(Peptide, source_dilution) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  mutate(log10_dilution = log10(target_dilution_amol)) %>% 
+  ggplot(aes(x = log10_dilution, y= log(total_area_MS1 +1), color = Peptide)) +
+  facet_wrap(~ source) +
+  geom_point() +
+  geom_line(aes(group = Peptide), show.legend = FALSE) +
+    labs(title = str_wrap("BSA Peptides MS1 Intensity Across Dilutions", width = 60),
+       x= "Log Scaled Dilution (amol)", y = "Log Scaled Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+combined_for_fig %>% 
+  filter(!total_area_MS1 > 250000000) %>% 
+  group_by(Peptide, source_dilution) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  mutate(log10_dilution = log10(target_dilution_amol)) %>% 
+  ggplot(aes(x = log10_dilution, y= total_area_MS1, color = Peptide)) +
+  facet_wrap(~ source) +
+  geom_point() +
+  geom_line(aes(group = Peptide), show.legend = FALSE) +
+    labs(title = str_wrap("BSA Peptides MS1 Intensity Across Dilutions", width = 60),
+       x= "Log Scaled Dilution (amol)", y = "Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+```
+
+### Visualizing Triggers
+
+```{r}
+matched_dda_skyline_sh_distinct 
+
+filtered_distinct_tom_sh
+
+dda_sh_for_fig <- matched_dda_skyline_sh_distinct %>% 
+  group_by(Peptide, exp.x) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  select(Peptide, DDA_detection_count, `Charge`, `Total Area MS1`, `Total Area`, exp.x, Intensity) %>% 
+  rename(num_detected = DDA_detection_count, charge = Charge) %>% 
+  mutate(source = "DDA",
+      replicate = as.numeric(sub(".*_1e[3-7]_([1-3])", "\\1", exp.x)),
+      target_dilution_amol = case_when(
+      grepl("_1e3", exp.x) ~ 100,
+      grepl("_1e4", exp.x) ~ 10,
+      grepl("_1e5", exp.x) ~ 1,
+      grepl("_1e6", exp.x) ~ 0.1,
+      TRUE ~ NA_real_))
+
+tom_sh_for_fig <- filtered_distinct_tom_sh %>% 
+  group_by(Peptide, exp.x) %>%
+  arrange(desc(`Total Area MS1`)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  select(Peptide, tomahto_detection_count, z, `Total Area MS1`,`Total Area`, exp.x, `Trigger Intensity`) %>% 
+  rename(Intensity = `Trigger Intensity`, num_detected = tomahto_detection_count, charge = z) %>% 
+  mutate(source = "Tomahto",
+      replicate = as.numeric(sub(".*_1e[3-7]_([1-3])", "\\1", exp.x)),
+      target_dilution_amol = case_when(
+      grepl("_1e3", exp.x) ~ 100,
+      grepl("_1e4", exp.x) ~ 10,
+      grepl("_1e5", exp.x) ~ 1,
+      grepl("_1e6", exp.x) ~ 0.1,
+      TRUE ~ NA_real_))
+
+combined_sh_for_fig <- bind_rows(dda_sh_for_fig, tom_sh_for_fig) %>% 
+  rename(total_area_MS1 = "Total Area MS1", total_area_MS2 = "Total Area")
+
+combined_sh_for_fig <- left_join(combined_sh_for_fig, bsa_id, join_by(Peptide == peptide))
+
+combined_sh_for_fig <- combined_sh_for_fig %>% 
+  mutate(source_dilution = paste(source, target_dilution_amol, sep= ": ")) %>%
+  select(Peptide, charge, num_detected, total_area_MS1, total_area_MS2, source, target_dilution_amol, source_dilution, id, Intensity) %>% 
+    group_by(Peptide, source) %>% 
+  mutate(is_lowest_dilution = target_dilution_amol == min(target_dilution_amol)) %>% 
+  ungroup() %>% 
+  group_by(Peptide, source) %>%
+  mutate(total_times_detected = n()) %>%
+  ungroup()
+
+combined_sh_for_fig$total_area_MS1 <- as.numeric(combined_sh_for_fig$total_area_MS1)
+combined_sh_for_fig$total_area_MS2 <- as.numeric(combined_sh_for_fig$total_area_MS2)
+
+###########Detection of Triggers in DDA vs Tomahto Across Dilutions##############
+
+combined_sh_for_fig %>%
+  group_by(Peptide, source_dilution) %>%
+  ggplot(aes(x = source_dilution, y = reorder(id, desc(total_times_detected)), color = source)) +
+    facet_grid(rows = vars(source),
+             cols = vars(target_dilution_amol),
+             space = "free_y", scales = "fixed") +
+  geom_point(size= 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: BSA Tryptic Peptides (Triggers)", width = 60),
+    x = "Replicate", y = "Peptide ID", color = "Source"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+############Detection of Triggers in DDA vs Tomahto Across Dilutions + MS1 Intensity####
+
+combined_sh_for_fig %>%
+  group_by(Peptide, source_dilution) %>%
+  ggplot(aes(x = source_dilution, y = reorder(id, desc(total_times_detected)), color = source, size = total_area_MS1)) +
+    facet_grid(rows = vars(source),
+             cols = vars(target_dilution_amol),
+             space = "free_y", scales = "fixed") +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(combined_sh_for_fig$total_area_MS1))) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: BSA Tryptic Peptides (Triggers)", width = 60),
+    x = "Replicate", y = "Peptide ID", color = "Source", size = "Total MS1 Intensity"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+#########Detection of Triggers in DDA vs Tomahto Across Dilutions +LOG MS1 Intensity####
+
+combined_sh_for_fig %>%
+  group_by(Peptide, source_dilution) %>%
+  ggplot(aes(x = source_dilution, y = reorder(id, desc(total_times_detected)), color = source, size = log(total_area_MS1 +1))) +
+    facet_grid(rows = vars(source),
+             cols = vars(target_dilution_amol),
+             space = "free_y", scales = "fixed") +
+  geom_point() +
+  scale_size_continuous(limits = c(1, max(log(combined_sh_for_fig$total_area_MS1 +1)))) +
+  scale_color_manual(values = custom_palette) +
+  labs(
+    title = str_wrap("Repeatability: BSA Tryptic Peptides (Triggers)", width = 60),
+    x = "Replicate", y = "Peptide ID", color = "Source", size = "Total MS1 Intensity"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    panel.spacing = unit(1, "lines")
+  )
+
+########MS1 Intensity across dilutions#######################################
+
+combined_sh_for_fig %>% 
+  group_by(Peptide, source_dilution) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  mutate(log10_dilution = log10(target_dilution_amol)) %>% 
+  ggplot(aes(x = log10_dilution, y= total_area_MS1, color = Peptide)) +
+  facet_wrap(~ source) +
+  geom_point() +
+  geom_line(aes(group = Peptide), show.legend = FALSE) +
+    labs(title = str_wrap("BSA Peptides MS1 Intensity Across Dilutions:Triggers", width = 60),
+       x= "Log Scaled Dilution (amol)", y = "Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+
+########LOG MS1 Intensity across dilutions#######################################
+
+
+combined_sh_for_fig %>% 
+  group_by(Peptide, source_dilution) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  mutate(log10_dilution = log10(target_dilution_amol)) %>% 
+  ggplot(aes(x = log10_dilution, y= log(total_area_MS1+1), color = Peptide)) +
+  facet_wrap(~ source) +
+  geom_point() +
+  geom_line(aes(group = Peptide), show.legend = FALSE) +
+    labs(title = str_wrap("BSA Peptides MS1 Intensity Across Dilutions:Triggers", width = 60),
+       x= "Log Scaled Dilution (amol)", y = "Log Scaled Total Area MS1") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+#######Using PD and Tomahto Trigger Intensity Values############################################
+
+combined_sh_for_fig %>% 
+  group_by(Peptide, source_dilution) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  mutate(log10_dilution = log10(target_dilution_amol)) %>% 
+  ggplot(aes(x = log10_dilution, y= Intensity, color = Peptide)) +
+  facet_wrap(~ source) +
+  geom_point() +
+  geom_line(aes(group = Peptide), show.legend = FALSE) +
+    labs(title = str_wrap("BSA Peptides Across Dilutions:Triggers", width = 60),
+       x= "Log Scaled Dilution (amol)", y = "Trigger Intensity") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+#######Using PD and Tomahto Trigger LOG SCALED Intensity Values############################################
+
+combined_sh_for_fig %>% 
+  group_by(Peptide, source_dilution) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  mutate(log10_dilution = log10(target_dilution_amol)) %>% 
+  ggplot(aes(x = log10_dilution, y= log(Intensity), color = Peptide)) +
+  facet_wrap(~ source) +
+  geom_point() +
+  geom_line(aes(group = Peptide), show.legend = FALSE) +
+    labs(title = str_wrap("BSA Peptides Across Dilutions:Triggers", width = 60),
+       x= "Log Scaled Dilution (amol)", y = "Log Scaled Trigger Intensity") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+
+#######Visualizing individual intensity values##########################
+
+combined_sh_for_fig %>% 
+  filter(source == "DDA") %>% 
+  group_by(Peptide, target_dilution_amol) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  mutate(dilution = as.character(target_dilution_amol)) %>% 
+  ggplot(aes(x = dilution, y = log(total_area_MS1 +1), color = dilution)) +
+  facet_wrap(~Peptide, scales = "free") +
+  geom_point() +
+  labs(title = "Total_area_MS1 by Peptide, Charge, and Target Dilution",
+       x = "Target Dilution (amol)",
+       y = "Log Scaled Total Area MS1")
+
+combined_sh_for_fig %>% 
+  filter(source == "Tomahto") %>% 
+  group_by(Peptide, target_dilution_amol) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  mutate(dilution = as.character(target_dilution_amol)) %>% 
+  ggplot(aes(x = dilution, y = total_area_MS1, color = dilution)) +
+  facet_wrap(~Peptide) +
+  geom_point(position = position_jitter(width = 0.2), size = 2) + 
+  labs(title = "Intensity by Peptide, Charge, and Target Dilution",
+       x = "Target Dilution (amol)",
+       y = "Total Area MS1")
+
+combined_for_fig %>% 
+  filter(source == "DDA") %>% 
+  group_by(Peptide, target_dilution_amol) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  mutate(dilution = as.character(target_dilution_amol)) %>% 
+  ggplot(aes(x = dilution, y = total_area_MS1, color = dilution)) +
+  facet_wrap(~Peptide, scales ="fixed") +
+  geom_point(position = position_jitter(width = 0.2), size = 2) + 
+  labs(title = "Intensity by Peptide, Charge, and Target Dilution",
+       x = "Target Dilution (amol)",
+       y = "Total Area MS1")
+
+###########Summary Statistics for Triggers###################################################
+
+##raw values
+combined_sh_statistics <- combined_sh_for_fig %>% 
+  group_by(Peptide, charge, target_dilution_amol, source) %>% 
+  mutate(
+    mean_by_dil_and_source_MS1 = mean(total_area_MS1),
+    sd_by_dil_and_source_MS1 = sd(total_area_MS1),
+    cv_by_dil_and_source_MS1 = (sd(total_area_MS1) / mean(total_area_MS1) * 100),
+    mean_by_dil_and_source_Intensity = mean(Intensity),
+    sd_by_dil_and_source_Intensity = sd(Intensity),
+    cv_by_dil_and_source_Intensity = (sd(Intensity)/ mean(Intensity))*100) %>% 
+  ungroup() %>% 
+  group_by(Peptide, charge, source) %>% 
+  mutate(
+    mean_by_source_MS1 = mean(total_area_MS1),
+    sd_by_source_MS1 = sd(total_area_MS1),
+    cv_by_source_MS1 = (sd(total_area_MS1) / mean(total_area_MS1) * 100),
+    mean_by_source_Intensity = mean(Intensity),
+    sd_by_source_Intensity = sd(Intensity),
+    cv_by_source_Intensity = (sd(Intensity)/ mean(Intensity))*100) %>% 
+  ungroup() %>% 
+  group_by(Peptide, charge) %>% 
+  mutate(
+    meanMS1 = mean(total_area_MS1),
+    sdMS1 = sd(total_area_MS1),
+    cvMS1 = (sd(total_area_MS1) / mean(total_area_MS1) * 100),    
+  )
+
+##log transformed values
+combined_sh_statistics <- combined_sh_for_fig %>% 
+  group_by(Peptide, charge, target_dilution_amol, source) %>% 
+  mutate(
+    mean_log_by_dil_and_source_MS1 = mean(log(total_area_MS1 +1)),
+    sd_log_by_dil_and_source_MS1 = sd(log(total_area_MS1 +1)),
+    cv_log_by_dil_and_source_MS1 = (sd(log(total_area_MS1 +1)) / mean(log(total_area_MS1 +1)) * 100),
+    mean_log_by_dil_and_source_Intensity = mean(log(Intensity +1)),
+    sd_log_by_dil_and_source_Intensity = sd(log(Intensity +1)),
+    cv_log_by_dil_and_source_Intensity = (sd(log(Intensity +1))/ mean(log(Intensity +1)))*100) %>% 
+  ungroup() %>% 
+  group_by(Peptide, charge, source) %>% 
+  mutate(
+    mean_log_by_source_MS1 = mean(log(total_area_MS1 +1)),
+    sd_log_by_source_MS1 = sd(log(total_area_MS1 +1)),
+    cv_log_by_source_MS1 = (sd(log(total_area_MS1 +1)) / mean(log(total_area_MS1 +1)) * 100),
+    mean_log_by_source_Intensity = mean(log(Intensity +1)),
+    sd_log_by_source_Intensity = sd(log(Intensity +1)),
+    cv_log_by_source_Intensity = (sd(log(Intensity +1))/ mean(log(Intensity +1)))*100) %>% 
+  ungroup() %>% 
+  group_by(Peptide, charge) %>% 
+  mutate(
+    meanlogMS1 = mean(log(total_area_MS1 +1)),
+    sdlogMS1 = sd(log(total_area_MS1 +1)),
+    cvlogMS1 = (sd(log(total_area_MS1 +1)) / mean(log(total_area_MS1 +1)) * 100),    
+  ) %>% 
+  ungroup()
+
+write_csv(combined_sh_statistics, "240229_shTMTpro_stats_HUVEC_BSA.csv")  
+
+###########Summary Statistics for Targets###################################################
+
+combined_tmt_statistics <- combined_for_fig %>% 
+  group_by(Peptide, charge, target_dilution_amol, source) %>% 
+  mutate(
+    mean_by_dil_and_source_MS1 = mean(total_area_MS1),
+    sd_by_dil_and_source_MS1 = sd(total_area_MS1),
+    cv_by_dil_and_source_MS1 = (sd(total_area_MS1) / mean(total_area_MS1) * 100),
+    mean_log_by_dil_and_source_MS1 = mean(log(total_area_MS1 +1)),
+    sd_log_by_dil_and_source_MS1 = sd(log(total_area_MS1 +1)),
+    cv_log_by_dil_and_source_MS1 = (sd(log(total_area_MS1 +1)) / mean(log(total_area_MS1 +1)) * 100)) %>%
+  ungroup() %>% 
+  group_by(Peptide, charge, target_dilution_amol) %>% 
+  mutate(
+    mean_by_dil_MS1 = mean(total_area_MS1),
+    sd_by_dil_MS1 = sd(total_area_MS1),
+    cv_by_dil_MS1 = (sd(total_area_MS1) / mean(total_area_MS1) * 100),
+    mean_log_by_dil_MS1 = mean(log(total_area_MS1 +1)),
+    sd_log_by_dil_MS1 = sd(log(total_area_MS1 +1)),
+    cv_log_by_dil_MS1 = (sd(log(total_area_MS1 +1)) / mean(log(total_area_MS1 +1)) * 100)) %>% 
+  ungroup()
+  
+write_csv(combined_tmt_statistics, "240229_TMTpro_stats_HUVEC_BSA.csv")  
+
+```
+
+### Combining Jurkat and HUVEC BSA
+
+```{r}
+jurkat <- jurkat %>% 
+  mutate(cell = "Jurkat") %>% 
+  mutate(source = ifelse(str_detect(source, "Tomahto"), "Tomahto HCD", source))
+
+huvec <- combined_for_fig %>% 
+  mutate(cell = "HUVEC") %>% 
+  mutate(source = ifelse(str_detect(source, "Tomahto"), "Tomahto CID", source))
+
+cid_hcd <- bind_rows(jurkat, huvec)
+
+cid_hcd <- cid_hcd %>%
+  mutate(source = ifelse(str_detect(source, "DDA"), "DDA HCD", source)) %>% 
+  mutate(source = factor(source, levels = c("DDA HCD", "Tomahto HCD", "Tomahto CID")))
+
+cid_hcd <- cid_hcd %>% 
+  filter(!target_dilution_amol == 0.01) %>% 
+  mutate(is_lowest_dilution = target_dilution_amol == min(target_dilution_amol))
+
+cid_hcd <- cid_hcd %>% 
+  mutate(replicate = ifelse(source == "Tomahto CID", 1, replicate)) 
+
+cid_hcd <- cid_hcd %>% 
+  filter(!(source == "DDA HCD" & cell == "HUVEC"))
+
+write_csv(cid_hcd, "240313_Combined_HCD_CID_BSA.csv")
+
+#####################peptide IDs + NO MS1 Intensity######################
+plot_bsa_ids_detection_cid_hcd <- cid_hcd %>% 
+  group_by(Peptide, source) %>% 
+  filter(is_lowest_dilution = TRUE) %>% 
+ggplot(aes(x= source, y = reorder(id, desc(total_area_MS1)), color= source)) +
+  geom_point(size = 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of BSA Peptides", width = 60),
+       x= "Source", y = "Peptide ID", color = "Source") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_bsa_ids_detection_cid_hcd
+
+#####################peptide full sequence + NO MS1 Intensity######################
+
+plot_bsa_detection_cid_hcd <- cid_hcd %>% 
+  group_by(Peptide, source) %>% 
+  filter(is_lowest_dilution = TRUE) %>% 
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= source)) +
+  geom_point(size = 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of BSA Peptides", width = 60),
+       x= "Source", y = "Peptide", color = "Source") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold")) +
+    guides(color = "none")
+
+plot_bsa_detection_cid_hcd
+
+#####################peptide full sequence + NO MS1 Intensity######################
+
+plot_bsa_detection_dil_cid_hcd <- cid_hcd %>% 
+  filter(!(cell == "HUVEC" & source == "DDA HCD")) %>% 
+  group_by(Peptide, source) %>% 
+  filter(is_lowest_dilution = TRUE) %>% 
+ggplot(aes(x= source, y = reorder(Peptide, desc(total_area_MS1)), color= source_dilution)) +
+  geom_point(size = 5) +
+  scale_color_manual(values = custom_palette) +
+  labs(title = str_wrap("Detection of BSA Peptides in Complex Matrix", width = 60),
+       x= "MS Sampling Mode", y = "Peptide", color = str_wrap("amol on Column", width = 15)) +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 11, color = "black"),
+    axis.title = element_text(size = 14, color = "black"), 
+    legend.text = element_text(size = 10, color = "black")
+    )
+
+plot_bsa_detection_dil_cid_hcd
+
+
+```
+
